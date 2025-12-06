@@ -2,6 +2,8 @@
 #include "xmss.h"
 #include "xmss_core.h"
 #include "params.h"
+#include "xmss_callbacks.h"
+#include "sha256.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -70,6 +72,11 @@ static uint64_t get_sk_index(const unsigned char* sk, const xmss_params* params)
 }
 
 int mcu_xmss_init(void) {
+    // 0. Register Callbacks
+    xmss_set_sha_cb(xmss_sha256_wrapper);
+    // Note: RNG callback is not strictly needed for signing if keys are pre-generated,
+    // but if needed, register it here.
+
     // 1. Initialize Parameters
     if (xmssmt_parse_oid(&g_params, XMSS_OID_VAL) != 0) {
         return MCU_XMSS_ERR_KEYS;
