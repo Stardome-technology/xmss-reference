@@ -1,0 +1,55 @@
+#ifndef MCU_XMSS_H
+#define MCU_XMSS_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+// Return codes
+#define MCU_XMSS_OK 0
+#define MCU_XMSS_ERR_FILESYSTEM -1
+#define MCU_XMSS_ERR_KEYS -2
+#define MCU_XMSS_ERR_INDEX -3
+
+/**
+ * Initialize the MCU XMSS module.
+ * - Reads index from storage.
+ * - Checks integrity/clean shutdown.
+ * - Applies index skipping logic if needed.
+ * - Initializes internal state.
+ */
+int mcu_xmss_init(void);
+
+/**
+ * Sign a message using the current index.
+ * - Manages index increment.
+ * - Updates flash storage periodically (every 50 signatures).
+ * - Uses XMSSMT-SHA2_40/8_256 parameters.
+ * 
+ * @param msg Pointer to the message to sign.
+ * @param msglen Length of the message.
+ * @param sig Buffer to store the signature (must be large enough for XMSSMT-SHA2_40/8_256).
+ * @param siglen Pointer to store the length of the generated signature.
+ */
+int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
+                  unsigned char *sig, unsigned long long *siglen);
+
+/**
+ * Perform a clean shutdown.
+ * - Saves the current index to flash.
+ * - Updates the integrity check to mark a clean shutdown.
+ */
+int mcu_xmss_shutdown(void);
+
+/**
+ * Get the current index (for display/debug).
+ */
+uint64_t mcu_xmss_get_index(void);
+
+/**
+ * NOTE: This module should be compiled with `xmss_core.c` (stateless implementation),
+ * NOT `xmss_core_fast.c` (which uses large BDS state in RAM).
+ * The stateless implementation is slower but uses significantly less RAM and is
+ * simpler for "Index-Only" storage strategies.
+ */
+
+#endif // MCU_XMSS_H
