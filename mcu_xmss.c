@@ -4,8 +4,10 @@
 #include "params.h"
 #include "xmss_callbacks.h"
 #include "sha256.h"
+#include "zlib.h"
 #include <string.h>
 #include <stdio.h>
+#include "app_utils.h"
 
 // --- Configuration ---
 #define XMSS_OID_VAL 0x00000005 // XMSSMT-SHA2_40/8_256
@@ -18,26 +20,58 @@
 // Replace these with actual LittleFS and CRC implementations
 
 static int lfs_read_file(const char* filename, void* buffer, size_t size) {
-    // TODO: Implement LittleFS read
-    // FILE *f = fopen(filename, "rb");
-    // if (!f) return -1;
-    // fread(buffer, 1, size, f);
-    // fclose(f);
-    return 0; // Success
+    if (!filename || !buffer || size == 0) {
+        return -1;
+    }
+
+    size_t bytes_read = 0;
+    int rc = app_utils_read_file(filename, buffer, size, &bytes_read);
+
+    /* success only if app_utils returned OK and we read the expected size */
+    if (rc == APP_UTILS_OK && bytes_read == size) {
+        return 0;
+    }
+
+    /* treat any other scenario (missing file, short read, or error) as failure */
+    return -1;
 }
 
 static int lfs_write_file(const char* filename, const void* buffer, size_t size) {
-    // TODO: Implement LittleFS write (atomic)
-    // FILE *f = fopen(filename, "wb");
-    // if (!f) return -1;
-    // fwrite(buffer, 1, size, f);
-    // fclose(f);
-    return 0; // Success
+    if (!filename || !buffer || size == 0) {
+        return -1;
+    }
+
+    size_t bytes_written = 0;
+    /* Use truncate mode to replace file contents when writing checkpoints/integrity */
+    int rc = app_utils_write_file(filename, buffer, size, &bytes_written, 1 /*truncate*/);
+
+    if (rc == APP_UTILS_OK && bytes_written == size) return 0;
+    return -1;
 }
 
 static uint32_t calculate_crc32(const void* data, size_t size) {
-    // TODO: Implement hardware CRC or software CRC32
-    return 0xDEADBEEF; 
+    /*
+     * Use zlib's crc32_z which accepts a size_t length (safer than crc32).
+     * For integer-sized values (in our code we use this for the 64-bit index),
+     * compute the CRC over a canonical big-endian byte representation so the
+     * CRC is independent of host endianness.
+     */
+    if (data == NULL || size == 0) return 0;
+
+    /* Handle canonicalization for 64-bit index values */
+    if (size == sizeof(uint64_t)) {
+        uint8_t be[sizeof(uint64_t)];
+        uint64_t v = *(const uint64_t *)data;
+        /* store big-endian */
+        for (int i = 0; i < (int)sizeof(be); ++i) {
+            be[sizeof(be) - 1 - i] = (uint8_t)(v & 0xFF);
+            v >>= 8;
+        }
+        return (uint32_t)crc32_z(0L, be, (z_size_t)sizeof(be));
+    }
+
+    /* Fallback: compute CRC over the raw bytes provided */
+    return (uint32_t)crc32_z(0L, (const unsigned char *)data, (z_size_t)size);
 }
 
 // --- Internal State ---
@@ -45,7 +79,18 @@ static uint64_t g_ram_index = 0;
 static uint64_t g_flash_index_checkpoint = 0;
 static xmss_params g_params;
 static unsigned char g_sk_static[200]; // Buffer for SK (size depends on params, ~140 bytes for 40/8)
+static unsigned char g_pk_static[200]; // Buffer for PK (size depends on params, ~64 bytes for 40/8)
 static int g_initialized = 0;
+
+/* Fallback static buffers used when heap allocation fails on constrained devices.
+ * Size chosen to cover common XMSS signature sizes used in tests (tweak as needed
+ * for your parameter set or available RAM). If you prefer to increase the heap,
+ * update your XC32/MPLAB project linker settings (heap size) or adjust
+ * `XMSS_SIG_MAX_STATIC` here.
+ */
+#define XMSS_SIG_MAX_STATIC (8 * 1024) /* 8 KiB default fallback buffer (reduced) */
+static unsigned char g_signature_static[XMSS_SIG_MAX_STATIC];
+static unsigned char g_verified_static[XMSS_SIG_MAX_STATIC];
 
 // Helper to serialize index into SK
 static void set_sk_index(unsigned char* sk, uint64_t idx, const xmss_params* params) {
@@ -71,61 +116,70 @@ static uint64_t get_sk_index(const unsigned char* sk, const xmss_params* params)
     return idx;
 }
 
-int mcu_xmss_init(void) {
+int mcu_xmss_init_ram(void) {
     // 0. Register Callbacks
     xmss_set_sha_cb(xmss_sha256_wrapper);
-    // Note: RNG callback is not strictly needed for signing if keys are pre-generated,
-    // but if needed, register it here.
+    // RNG callback is set in app.c
 
     // 1. Initialize Parameters
     if (xmssmt_parse_oid(&g_params, XMSS_OID_VAL) != 0) {
         return MCU_XMSS_ERR_KEYS;
     }
 
-    // 2. Load Secret Key (Static parts)
-    // We assume the secret key file contains the full SK. 
-    // We will overwrite the index part in RAM.
-    if (lfs_read_file(SECRET_FILE, g_sk_static, g_params.sk_bytes) != 0) {
-        return MCU_XMSS_ERR_FILESYSTEM;
+    SYS_CONSOLE_PRINT("XMSS: Starting keypair generation...\r\n");
+
+    // 2. Generate new keypair
+    size_t sk_buf_size = (size_t)g_params.sk_bytes + XMSS_OID_LEN;
+    size_t pk_buf_size = (size_t)g_params.pk_bytes + XMSS_OID_LEN;
+    unsigned char *sk = malloc(sk_buf_size);
+    unsigned char *pk = malloc(pk_buf_size);
+    if (!sk || !pk) {
+        SYS_CONSOLE_PRINT("XMSS: Memory allocation failed\r\n");
+        if (sk) free(sk);
+        if (pk) free(pk);
+        return MCU_XMSS_ERR_KEYS;
     }
 
-    // 3. Read Index Checkpoint
-    uint64_t stored_index = 0;
-    if (lfs_read_file(INDEX_FILE, &stored_index, sizeof(stored_index)) != 0) {
-        // If file doesn't exist, assume 0 (fresh device)
-        stored_index = 0;
-    }
-
-    // 4. Check Integrity (Clean Shutdown?)
-    uint32_t stored_crc = 0;
-    uint32_t calc_crc = calculate_crc32(&stored_index, sizeof(stored_index));
+    // Start timing using SYS_TIME (Harmony standard)
+    uint64_t start_count = SYS_TIME_Counter64Get();
     
-    int clean_shutdown = 0;
-    if (lfs_read_file(INTEGRITY_FILE, &stored_crc, sizeof(stored_crc)) == 0) {
-        if (stored_crc == calc_crc) {
-            clean_shutdown = 1;
-        }
+    if (xmssmt_keypair(pk, sk, XMSS_OID_VAL) != 0) {
+        SYS_CONSOLE_PRINT("XMSS: Keypair generation failed\r\n");
+        free(sk);
+        free(pk);
+        return MCU_XMSS_ERR_KEYS;
     }
 
-    // 5. Determine Start Index
-    if (clean_shutdown) {
-        g_ram_index = stored_index;
+    // End timing
+    uint64_t end_count = SYS_TIME_Counter64Get();
+    uint64_t elapsed_counts = end_count - start_count;
+    uint32_t elapsed_ms = (uint32_t)SYS_TIME_CountToMS(elapsed_counts);
+    
+    SYS_CONSOLE_PRINT("XMSS: Keypair generation completed in %u ms\r\n", elapsed_ms);
+
+    // 3. Store keys in RAM (include OID prefix)
+    size_t sk_copy_len = (size_t)g_params.sk_bytes + XMSS_OID_LEN;
+    size_t pk_copy_len = (size_t)g_params.pk_bytes + XMSS_OID_LEN;
+    if (sk_copy_len <= sizeof(g_sk_static)) {
+        memcpy(g_sk_static, sk, sk_copy_len);
     } else {
-        // Dirty shutdown: Skip safety margin
-        g_ram_index = stored_index + INDEX_SAVE_INTERVAL;
-        
-        // Immediately update flash to reflect this skip
-        g_flash_index_checkpoint = g_ram_index;
-        lfs_write_file(INDEX_FILE, &g_flash_index_checkpoint, sizeof(g_flash_index_checkpoint));
-        
-        // We do NOT mark clean yet, or we could. 
-        // Let's mark clean to establish a new valid baseline.
-        uint32_t new_crc = calculate_crc32(&g_flash_index_checkpoint, sizeof(g_flash_index_checkpoint));
-        lfs_write_file(INTEGRITY_FILE, &new_crc, sizeof(new_crc));
+        /* Should not happen: ensure we don't overflow static buffers */
+        memcpy(g_sk_static, sk, sizeof(g_sk_static));
     }
+    if (pk_copy_len <= sizeof(g_pk_static)) {
+        memcpy(g_pk_static, pk, pk_copy_len);
+    } else {
+        memcpy(g_pk_static, pk, sizeof(g_pk_static));
+    }
+    free(sk);
+    free(pk);
 
-    g_flash_index_checkpoint = g_ram_index;
+    // 4. Initialize index to 0
+    g_ram_index = 0;
+    g_flash_index_checkpoint = 0;
+
     g_initialized = 1;
+    SYS_CONSOLE_PRINT("XMSS: Initialization completed\r\n");
     return MCU_XMSS_OK;
 }
 
@@ -133,123 +187,136 @@ int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
                   unsigned char *sig, unsigned long long *siglen) {
     if (!g_initialized) return MCU_XMSS_ERR_KEYS;
 
-    // 1. Check if we need to update Flash Checkpoint
-    // We update if we have advanced INDEX_SAVE_INTERVAL since last checkpoint
-    if (g_ram_index >= g_flash_index_checkpoint + INDEX_SAVE_INTERVAL) {
-        g_flash_index_checkpoint = g_ram_index;
-        
-        // Write new index
-        if (lfs_write_file(INDEX_FILE, &g_flash_index_checkpoint, sizeof(g_flash_index_checkpoint)) != 0) {
-            return MCU_XMSS_ERR_FILESYSTEM;
-        }
-        
-        // Note: We do NOT update the integrity file here. 
-        // The integrity file is only for "Clean Shutdown".
-        // If we crash now, the CRC will mismatch (old CRC vs new Index), 
-        // causing the next boot to skip +50. This is exactly what we want.
-    }
+    // 1. Prepare Secret Key with Current Index (use heap to avoid stack overflow)
+    size_t sk_working_size = (size_t)g_params.sk_bytes + XMSS_OID_LEN;
+    unsigned char *sk_working = malloc(sk_working_size);
+    if (!sk_working) return MCU_XMSS_ERR_KEYS;
+    /* g_sk_static contains OID + sk bytes */
+    memcpy(sk_working, g_sk_static, sk_working_size);
 
-    // 2. Prepare Secret Key with Current Index
-    // Copy static SK to a working buffer (or just modify in place if thread-safe)
-    // Since we are single-threaded MCU, we can modify g_sk_static temporarily 
-    // BUT xmssmt_core_sign updates the SK. We should use a copy or reset it.
-    // Actually, xmssmt_core_sign updates the index in the SK. 
-    // We want to control the index explicitly.
-    
-    unsigned char sk_working[200]; // Ensure enough space
-    memcpy(sk_working, g_sk_static, g_params.sk_bytes);
-    
     set_sk_index(sk_working, g_ram_index, &g_params);
 
-    // 3. Sign
-    // xmssmt_core_sign(params, sk, sm, smlen, m, mlen)
-    // It produces sm = sig || msg. We need to extract sig.
-    // Wait, xmssmt_core_sign signature:
-    // int xmssmt_core_sign(const xmss_params *params, unsigned char *sk,
-    //                      unsigned char *sm, unsigned long long *smlen,
-    //                      const unsigned char *m, unsigned long long mlen);
-    // It writes signature + message into sm.
-    // We want just the signature.
-    // We can pass a temporary buffer or point sm to sig and handle the message copy.
-    // Standard API usually copies message.
-    
-    unsigned char *sm = NULL;
-    unsigned long long smlen = 0;
-    
-    // Allocate buffer for sig + msg
-    // On MCU, be careful with stack. 
-    // Sig size ~10KB. Msg size unknown.
-    // Better to use the 'sig' buffer provided by user if it's large enough?
-    // The user API `mcu_xmss_sign` asks for `sig` buffer.
-    // Usually `sig` buffer is just for signature.
-    // `xmssmt_core_sign` puts Sig || Msg into `sm`.
-    // We can't easily use `xmssmt_core_sign` if we don't want to copy the message.
-    // Let's look at `xmss_core_sign` implementation.
-    // It calls `xmssmt_core_sign_open`? No.
-    
-    // Let's use a temporary buffer for the signature part if possible, 
-    // or just trick it.
-    // The reference implementation `xmss_core_sign` does:
-    //   xmss_sign_signature(sk, sm, m, mlen) -> writes sig to sm
-    //   memcpy(sm + sig_len, m, mlen);
-    // Wait, I need to check `xmss_core.c` to see if there is a function that JUST generates signature.
-    // `xmssmt_core_sign` does both.
-    
-    // Let's assume we can use `xmssmt_sign_signature` if it exists (it was mentioned in the gemini doc).
-    // If not, we use `xmssmt_core_sign` and discard the message part.
-    // We need a buffer of size sig_len + msg_len.
-    // If msg is large, this is bad.
-    
-    // Let's check `xmss_core.c` for `xmssmt_core_sign` implementation.
-    // If it calls a lower level function, we can use that.
-    
-    // For now, I will assume I can allocate a buffer for Sig+Msg, 
-    // or I will check if I can pass `sig` and `msg` separately.
-    // The `xmss.h` has `xmssmt_sign` which returns `sig` and `sk`.
-    // `xmssmt_sign` calls `xmssmt_core_sign`.
-    
-    // Let's look at `xmss.c`.
-    
-    // For the purpose of this file, I will use a simplified flow:
-    // 1. Set index in SK.
-    // 2. Call `xmssmt_core_sign` with a temp buffer (if msg is small) or handle it.
-    // Actually, `xmssmt_sign` in `xmss.c` takes `sig` buffer.
-    // int xmssmt_sign(unsigned char *sk, unsigned char *sig, unsigned long long *siglen, ...)
-    // This is exactly what we want.
-    // It handles the `sm` construction internally?
-    // Let's check `xmss.c`.
-    
-    // If `xmss.c` is available, I should use `xmssmt_sign`.
-    // But `xmssmt_sign` updates `sk`.
-    // That's fine, we are using a local copy `sk_working`.
-    
+    // 2. Sign
     int ret = xmssmt_sign(sk_working, sig, siglen, msg, msglen);
-    if (ret != 0) return MCU_XMSS_ERR_KEYS;
+    if (ret != 0) {
+        free(sk_working);
+        return MCU_XMSS_ERR_KEYS;
+    }
 
-    // 4. Increment RAM Index
+    // 3. Increment RAM Index
     g_ram_index++;
-
+    free(sk_working);
     return MCU_XMSS_OK;
 }
 
+int mcu_xmss_test_sign_verify(void) {
+    if (!g_initialized) {
+        SYS_CONSOLE_PRINT("XMSS: Not initialized\r\n");
+        return MCU_XMSS_ERR_KEYS;
+    }
+
+    const char *test_message = "STARDOME";
+    unsigned long long msg_len = strlen(test_message);
+    
+    SYS_CONSOLE_PRINT("XMSS: Testing signature with message '%s'\r\n", test_message);
+
+    // Allocate signature buffer using parameters to avoid overflow
+    unsigned long long expected_smlen = (unsigned long long)g_params.sig_bytes + msg_len;
+    SYS_CONSOLE_PRINT("XMSS: params.sig_bytes=%u, msg_len=%llu, expected_smlen=%llu\r\n", g_params.sig_bytes, msg_len, expected_smlen);
+    unsigned char *signature = malloc((size_t)expected_smlen);
+    unsigned long long sig_len = expected_smlen;
+    int signature_is_dynamic = 1;
+
+    if (!signature) {
+        /* Try static fallback buffer if the heap is too small */
+        if (expected_smlen <= (unsigned long long)XMSS_SIG_MAX_STATIC) {
+            SYS_CONSOLE_PRINT("XMSS: malloc failed for signature; using static fallback buffer (%u bytes)\r\n", XMSS_SIG_MAX_STATIC);
+            signature = g_signature_static;
+            signature_is_dynamic = 0;
+        } else {
+            SYS_CONSOLE_PRINT("XMSS: Memory allocation failed for signature (requested %llu bytes)\r\n", expected_smlen);
+            SYS_CONSOLE_PRINT("XMSS: params: sig_bytes=%u, pk_bytes=%u, sk_bytes=%llu\r\n", g_params.sig_bytes, g_params.pk_bytes, g_params.sk_bytes);
+            SYS_CONSOLE_PRINT("XMSS: Requested signature buffer exceeds static fallback (%u).\r\n", XMSS_SIG_MAX_STATIC);
+            SYS_CONSOLE_PRINT("XMSS: Consider increasing the heap in the XC32 linker options or reducing the XMSS parameter set.\r\n");
+            return MCU_XMSS_ERR_KEYS;
+        }
+    }
+
+    // Start timing for signing
+    uint64_t sign_start = SYS_TIME_Counter64Get();
+    
+    // Sign the message
+    int sign_result = mcu_xmss_sign((const unsigned char *)test_message, msg_len, signature, &sig_len);
+    
+    // End timing for signing
+    uint64_t sign_end = SYS_TIME_Counter64Get();
+    uint64_t sign_elapsed = sign_end - sign_start;
+    uint32_t sign_ms = (uint32_t)SYS_TIME_CountToMS(sign_elapsed);
+    
+    if (sign_result != MCU_XMSS_OK) {
+        SYS_CONSOLE_PRINT("XMSS: Signing failed\r\n");
+        free(signature);
+        return sign_result;
+    }
+    
+    SYS_CONSOLE_PRINT("XMSS: Signing completed in %u ms, signature size: %llu bytes\r\n", sign_ms, sig_len);
+
+    // Start timing for verification
+    uint64_t verify_start = SYS_TIME_Counter64Get();
+    
+    // Verify the signature
+    // xmssmt_sign_open expects an output buffer `m` of size at least params->sig_bytes + message_len
+    unsigned long long expected_msg_len = sig_len - (unsigned long long)g_params.sig_bytes;
+    size_t verified_buf_size = (size_t)((unsigned long long)g_params.sig_bytes + expected_msg_len);
+    unsigned char *verified_msg = malloc(verified_buf_size);
+    unsigned long long verified_len = 0;
+    int verified_is_dynamic = 1;
+
+    if (!verified_msg) {
+        if (verified_buf_size <= XMSS_SIG_MAX_STATIC) {
+            SYS_CONSOLE_PRINT("XMSS: malloc failed for verification buffer; using static fallback (%u bytes)\r\n", XMSS_SIG_MAX_STATIC);
+            verified_msg = g_verified_static;
+            verified_is_dynamic = 0;
+        } else {
+            SYS_CONSOLE_PRINT("XMSS: Memory allocation failed for verification (requested %u bytes)\r\n", (unsigned)verified_buf_size);
+            if (signature_is_dynamic) free(signature);
+            return MCU_XMSS_ERR_KEYS;
+        }
+    }
+
+    // XMSS verification - reconstruct signed message
+    int verify_result = xmssmt_sign_open(verified_msg, &verified_len, signature, sig_len, g_pk_static);
+    
+    // End timing for verification
+    uint64_t verify_end = SYS_TIME_Counter64Get();
+    uint64_t verify_elapsed = verify_end - verify_start;
+    uint32_t verify_ms = (uint32_t)SYS_TIME_CountToMS(verify_elapsed);
+    
+    if (verify_result == 0 && verified_len == msg_len && memcmp(verified_msg, test_message, msg_len) == 0) {
+        SYS_CONSOLE_PRINT("XMSS: Verification successful in %u ms\r\n", verify_ms);
+        SYS_CONSOLE_PRINT("XMSS: Test PASSED\r\n");
+    } else {
+        SYS_CONSOLE_PRINT("XMSS: Verification failed in %u ms\r\n", verify_ms);
+        SYS_CONSOLE_PRINT("XMSS: Test FAILED\r\n");
+    }
+
+    if (signature_is_dynamic) free(signature);
+    if (verified_is_dynamic) free(verified_msg);
+    return (verify_result == 0) ? MCU_XMSS_OK : MCU_XMSS_ERR_KEYS;
+}
+
 int mcu_xmss_shutdown(void) {
-    if (!g_initialized) return MCU_XMSS_ERR_KEYS;
-
-    // 1. Save current index
-    g_flash_index_checkpoint = g_ram_index;
-    if (lfs_write_file(INDEX_FILE, &g_flash_index_checkpoint, sizeof(g_flash_index_checkpoint)) != 0) {
-        return MCU_XMSS_ERR_FILESYSTEM;
-    }
-
-    // 2. Mark Clean Shutdown (Update Integrity)
-    uint32_t crc = calculate_crc32(&g_flash_index_checkpoint, sizeof(g_flash_index_checkpoint));
-    if (lfs_write_file(INTEGRITY_FILE, &crc, sizeof(crc)) != 0) {
-        return MCU_XMSS_ERR_FILESYSTEM;
-    }
-
+    // No-op in RAM-only mode
     return MCU_XMSS_OK;
 }
 
 uint64_t mcu_xmss_get_index(void) {
     return g_ram_index;
+}
+
+int mcu_xmss_get_pk(const uint8_t **pk, size_t *len) {
+    if (!g_initialized) return MCU_XMSS_ERR_KEYS;
+    if (pk) *pk = g_pk_static;
+    if (len) *len = (size_t)g_params.pk_bytes + XMSS_OID_LEN;
+    return MCU_XMSS_OK;
 }
