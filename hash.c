@@ -1,12 +1,13 @@
 #include <stdint.h>
 #include <string.h>
-#include <openssl/sha.h>
 
 #include "hash_address.h"
 #include "utils.h"
 #include "params.h"
 #include "hash.h"
-#include "fips202.h"
+#include "xmss_callbacks.h"
+
+static sha_cb_t sha_cb = NULL;
 
 #define XMSS_HASH_PADDING_F 0
 #define XMSS_HASH_PADDING_H 1
@@ -22,38 +23,30 @@ void addr_to_bytes(unsigned char *bytes, const uint32_t addr[8])
     }
 }
 
+int xmss_set_sha_cb(sha_cb_t cb)
+{
+    if (cb == NULL) {
+        return -1;
+    }
+    sha_cb = cb;
+    return 0;
+}
+
 static int core_hash(const xmss_params *params,
                      unsigned char *out,
                      const unsigned char *in, unsigned long long inlen)
 {
-    unsigned char buf[64];
-
-    if (params->n == 24 && params->func == XMSS_SHA2) {
-        SHA256(in, inlen, buf);
-        memcpy(out, buf, 24);
-    }
-    else if (params->n == 24 && params->func == XMSS_SHAKE256) {
-        shake256(out, 24, in, inlen);
-    }   
-    else if (params->n == 32 && params->func == XMSS_SHA2) {
-        SHA256(in, inlen, out);
-    }
-    else if (params->n == 32 && params->func == XMSS_SHAKE128) {
-        shake128(out, 32, in, inlen);
-    }
-    else if (params->n == 32 && params->func == XMSS_SHAKE256) {
-        shake256(out, 32, in, inlen);
-    }
-    else if (params->n == 64 && params->func == XMSS_SHA2) {
-        SHA512(in, inlen, out);
-    }
-    else if (params->n == 64 && params->func == XMSS_SHAKE256) {
-        shake256(out, 64, in, inlen);
-    }
-    else {
+    if (sha_cb == NULL) {
         return -1;
     }
-    return 0;
+
+    // Only support SHA2-256 (n=32)
+    if (params->n == 32 && params->func == XMSS_SHA2) {
+        return sha_cb(in, inlen, out);
+    }
+    
+    // Unsupported parameter set
+    return -1;
 }
 
 /*
