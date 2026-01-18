@@ -186,6 +186,7 @@ int mcu_xmss_init_ram(void) {
 int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
                   unsigned char *sig, unsigned long long *siglen) {
     if (!g_initialized) return MCU_XMSS_ERR_KEYS;
+    if (!sig || !siglen) return MCU_XMSS_ERR_KEYS;
 
     // 1. Prepare Secret Key with Current Index (use heap to avoid stack overflow)
     size_t sk_working_size = (size_t)g_params.sk_bytes + XMSS_OID_LEN;
@@ -196,12 +197,38 @@ int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
 
     set_sk_index(sk_working, g_ram_index, &g_params);
 
-    // 2. Sign
-    int ret = xmssmt_sign(sk_working, sig, siglen, msg, msglen);
-    if (ret != 0) {
+    // 2. Sign using upstream API.
+    //    NOTE: xmssmt_sign writes a "signed message" buffer: sm = [signature || message].
+    //    This wrapper returns only the detached signature bytes so the caller can
+    //    transport `message` separately (e.g., merkle_root in the CBOR attestation).
+    unsigned long long expected_smlen = (unsigned long long)g_params.sig_bytes + msglen;
+    unsigned long long smlen = expected_smlen;
+    unsigned char *sm = NULL;
+    int sm_is_dynamic = 1;
+
+    sm = (unsigned char *)malloc((size_t)expected_smlen);
+    if (!sm) {
+        if (expected_smlen <= (unsigned long long)XMSS_SIG_MAX_STATIC) {
+            sm = g_signature_static;
+            sm_is_dynamic = 0;
+        } else {
+            free(sk_working);
+            return MCU_XMSS_ERR_KEYS;
+        }
+    }
+
+    int ret = xmssmt_sign(sk_working, sm, &smlen, msg, msglen);
+    if (ret != 0 || smlen < (unsigned long long)g_params.sig_bytes) {
+        if (sm_is_dynamic) free(sm);
         free(sk_working);
         return MCU_XMSS_ERR_KEYS;
     }
+
+    // Copy signature prefix out.
+    memcpy(sig, sm, (size_t)g_params.sig_bytes);
+    *siglen = (unsigned long long)g_params.sig_bytes;
+
+    if (sm_is_dynamic) free(sm);
 
     // 3. Increment RAM Index
     g_ram_index++;
@@ -220,21 +247,23 @@ int mcu_xmss_test_sign_verify(void) {
     
     SYS_CONSOLE_PRINT("XMSS: Testing signature with message '%s'\r\n", test_message);
 
-    // Allocate signature buffer using parameters to avoid overflow
+    // Allocate detached signature buffer (wrapper returns signature-only)
+    unsigned long long expected_siglen = (unsigned long long)g_params.sig_bytes;
     unsigned long long expected_smlen = (unsigned long long)g_params.sig_bytes + msg_len;
-    SYS_CONSOLE_PRINT("XMSS: params.sig_bytes=%u, msg_len=%llu, expected_smlen=%llu\r\n", g_params.sig_bytes, msg_len, expected_smlen);
-    unsigned char *signature = malloc((size_t)expected_smlen);
-    unsigned long long sig_len = expected_smlen;
+    SYS_CONSOLE_PRINT("XMSS: params.sig_bytes=%u, msg_len=%llu, expected_siglen=%llu, expected_smlen=%llu\r\n",
+                      g_params.sig_bytes, msg_len, expected_siglen, expected_smlen);
+    unsigned char *signature = malloc((size_t)expected_siglen);
+    unsigned long long sig_len = expected_siglen;
     int signature_is_dynamic = 1;
 
     if (!signature) {
         /* Try static fallback buffer if the heap is too small */
-        if (expected_smlen <= (unsigned long long)XMSS_SIG_MAX_STATIC) {
+        if (expected_siglen <= (unsigned long long)XMSS_SIG_MAX_STATIC) {
             SYS_CONSOLE_PRINT("XMSS: malloc failed for signature; using static fallback buffer (%u bytes)\r\n", XMSS_SIG_MAX_STATIC);
             signature = g_signature_static;
             signature_is_dynamic = 0;
         } else {
-            SYS_CONSOLE_PRINT("XMSS: Memory allocation failed for signature (requested %llu bytes)\r\n", expected_smlen);
+            SYS_CONSOLE_PRINT("XMSS: Memory allocation failed for signature (requested %llu bytes)\r\n", expected_siglen);
             SYS_CONSOLE_PRINT("XMSS: params: sig_bytes=%u, pk_bytes=%u, sk_bytes=%llu\r\n", g_params.sig_bytes, g_params.pk_bytes, g_params.sk_bytes);
             SYS_CONSOLE_PRINT("XMSS: Requested signature buffer exceeds static fallback (%u).\r\n", XMSS_SIG_MAX_STATIC);
             SYS_CONSOLE_PRINT("XMSS: Consider increasing the heap in the XC32 linker options or reducing the XMSS parameter set.\r\n");
@@ -261,13 +290,28 @@ int mcu_xmss_test_sign_verify(void) {
     
     SYS_CONSOLE_PRINT("XMSS: Signing completed in %u ms, signature size: %llu bytes\r\n", sign_ms, sig_len);
 
+    // Build signed-message buffer for verification (sm = signature || message)
+    unsigned char *sm = malloc((size_t)expected_smlen);
+    int sm_is_dynamic = 1;
+    if (!sm) {
+        if (expected_smlen <= (unsigned long long)XMSS_SIG_MAX_STATIC) {
+            sm = g_verified_static;
+            sm_is_dynamic = 0;
+        } else {
+            SYS_CONSOLE_PRINT("XMSS: Memory allocation failed for signed-message (requested %llu bytes)\r\n", expected_smlen);
+            if (signature_is_dynamic) free(signature);
+            return MCU_XMSS_ERR_KEYS;
+        }
+    }
+    memcpy(sm, signature, (size_t)g_params.sig_bytes);
+    memcpy(sm + (size_t)g_params.sig_bytes, test_message, (size_t)msg_len);
+
     // Start timing for verification
     uint64_t verify_start = SYS_TIME_Counter64Get();
     
-    // Verify the signature
-    // xmssmt_sign_open expects an output buffer `m` of size at least params->sig_bytes + message_len
-    unsigned long long expected_msg_len = sig_len - (unsigned long long)g_params.sig_bytes;
-    size_t verified_buf_size = (size_t)((unsigned long long)g_params.sig_bytes + expected_msg_len);
+    // Verify the signature using the upstream verify API.
+    // xmssmt_sign_open expects `sm = signature || message`.
+    size_t verified_buf_size = (size_t)expected_smlen;
     unsigned char *verified_msg = malloc(verified_buf_size);
     unsigned long long verified_len = 0;
     int verified_is_dynamic = 1;
@@ -284,8 +328,7 @@ int mcu_xmss_test_sign_verify(void) {
         }
     }
 
-    // XMSS verification - reconstruct signed message
-    int verify_result = xmssmt_sign_open(verified_msg, &verified_len, signature, sig_len, g_pk_static);
+    int verify_result = xmssmt_sign_open(verified_msg, &verified_len, sm, expected_smlen, g_pk_static);
     
     // End timing for verification
     uint64_t verify_end = SYS_TIME_Counter64Get();
@@ -301,6 +344,7 @@ int mcu_xmss_test_sign_verify(void) {
     }
 
     if (signature_is_dynamic) free(signature);
+    if (sm_is_dynamic) free(sm);
     if (verified_is_dynamic) free(verified_msg);
     return (verify_result == 0) ? MCU_XMSS_OK : MCU_XMSS_ERR_KEYS;
 }

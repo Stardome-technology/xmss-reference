@@ -23,11 +23,15 @@ int mcu_xmss_init_ram(void);
  * - Manages index increment.
  * - Updates flash storage periodically (every 50 signatures).
  * - Uses XMSSMT-SHA2_40/8_256 parameters.
+ * - NOTE: The underlying XMSS reference API produces a "signed message" buffer
+ *   (sm = signature || message). This wrapper returns a detached signature
+ *   only (the signature prefix), so higher layers can transport `merkle_root`
+ *   separately per the CBOR schema.
  * 
  * @param msg Pointer to the message to sign.
  * @param msglen Length of the message.
- * @param sig Buffer to store the signature (must be large enough for XMSSMT-SHA2_40/8_256).
- * @param siglen Pointer to store the length of the generated signature.
+ * @param sig Buffer to store the detached signature (must be at least params.sig_bytes).
+ * @param siglen Pointer to store the length of the detached signature (== params.sig_bytes).
  */
 int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
                   unsigned char *sig, unsigned long long *siglen);
