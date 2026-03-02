@@ -6,9 +6,21 @@
 #include "params.h"
 #include "hash.h"
 #include "xmss_callbacks.h"
+#include "xmss_workspace.h"
 
 static sha_cb_t sha_cb = NULL;
 static rng_cb_t rng_cb = NULL;
+
+static int hash_params_fit_scratch(const xmss_params *params)
+{
+    if (params->n > XMSS_WS_MAX_N) {
+        return -1;
+    }
+    if (params->padding_len > XMSS_WS_MAX_PADDING_LEN) {
+        return -1;
+    }
+    return 0;
+}
 
 #define XMSS_HASH_PADDING_F 0
 #define XMSS_HASH_PADDING_H 1
@@ -66,7 +78,12 @@ int prf(const xmss_params *params,
         unsigned char *out, const unsigned char in[32],
         const unsigned char *key)
 {
-    unsigned char buf[params->padding_len + params->n + 32];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *buf = ws->prf_buf;
+
+    if (hash_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     ull_to_bytes(buf, params->padding_len, XMSS_HASH_PADDING_PRF);
     memcpy(buf + params->padding_len, key, params->n);
@@ -83,7 +100,12 @@ int prf_keygen(const xmss_params *params,
         unsigned char *out, const unsigned char *in,
         const unsigned char *key)
 {
-    unsigned char buf[params->padding_len + 2*params->n + 32];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *buf = ws->prf_keygen_buf;
+
+    if (hash_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     ull_to_bytes(buf, params->padding_len, XMSS_HASH_PADDING_PRF_KEYGEN);
     memcpy(buf + params->padding_len, key, params->n);
@@ -121,10 +143,15 @@ int thash_h(const xmss_params *params,
             unsigned char *out, const unsigned char *in,
             const unsigned char *pub_seed, uint32_t addr[8])
 {
-    unsigned char buf[params->padding_len + 3 * params->n];
-    unsigned char bitmask[2 * params->n];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *buf = ws->thash_h_buf;
+    unsigned char *bitmask = ws->thash_h_bitmask;
     unsigned char addr_as_bytes[32];
     unsigned int i;
+
+    if (hash_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     /* Set the function padding. */
     ull_to_bytes(buf, params->padding_len, XMSS_HASH_PADDING_H);
@@ -153,10 +180,15 @@ int thash_f(const xmss_params *params,
             unsigned char *out, const unsigned char *in,
             const unsigned char *pub_seed, uint32_t addr[8])
 {
-    unsigned char buf[params->padding_len + 2 * params->n];
-    unsigned char bitmask[params->n];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *buf = ws->thash_f_buf;
+    unsigned char *bitmask = ws->thash_f_bitmask;
     unsigned char addr_as_bytes[32];
     unsigned int i;
+
+    if (hash_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     /* Set the function padding. */
     ull_to_bytes(buf, params->padding_len, XMSS_HASH_PADDING_F);

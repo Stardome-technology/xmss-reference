@@ -10,6 +10,25 @@
 #include "utils.h"
 #include "xmss_commons.h"
 #include "xmss_core.h"
+#include "xmss_workspace.h"
+
+static xmss_workspace_t g_xmss_workspace;
+
+xmss_workspace_t *xmss_workspace_get(void)
+{
+    return &g_xmss_workspace;
+}
+
+static int core_params_fit_scratch(const xmss_params *params)
+{
+    if (params->n > XMSS_WS_MAX_N) {
+        return -1;
+    }
+    if (params->tree_height > XMSS_WS_MAX_TREE_HEIGHT) {
+        return -1;
+    }
+    return 0;
+}
 
 /**
  * For a given leaf index, computes the authentication path and the resulting
@@ -22,8 +41,9 @@ static void treehash(const xmss_params *params,
                      const unsigned char *pub_seed,
                      uint32_t leaf_idx, const uint32_t subtree_addr[8])
 {
-    unsigned char stack[(params->tree_height+1)*params->n];
-    unsigned int heights[params->tree_height+1];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *stack = ws->treehash_stack;
+    unsigned int *heights = ws->treehash_heights;
     unsigned int offset = 0;
 
     /* The subtree has at most 2^20 leafs, so uint32_t suffices. */
@@ -43,6 +63,12 @@ static void treehash(const xmss_params *params,
     set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
     set_type(ltree_addr, XMSS_ADDR_TYPE_LTREE);
     set_type(node_addr, XMSS_ADDR_TYPE_HASHTREE);
+
+    if (core_params_fit_scratch(params) != 0) {
+        memset(root, 0, params->n);
+        memset(auth_path, 0, params->tree_height * params->n);
+        return;
+    }
 
     for (idx = 0; idx < (uint32_t)(1 << params->tree_height); idx++) {
         /* Add the next leaf node to the stack. */
@@ -138,8 +164,14 @@ int xmssmt_core_seed_keypair(const xmss_params *params,
     /* We do not need the auth path in key generation, but it simplifies the
        code to have just one treehash routine that computes both root and path
        in one function. */
-    unsigned char auth_path[params->tree_height * params->n];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *auth_path = ws->seed_keypair_auth_path;
     uint32_t top_tree_addr[8] = {0};
+
+    if (core_params_fit_scratch(params) != 0) {
+        return -1;
+    }
+
     set_layer_addr(top_tree_addr, params->d - 1);
 
     /* Initialize index to 0. */
@@ -168,7 +200,12 @@ int xmssmt_core_seed_keypair(const xmss_params *params,
 int xmssmt_core_keypair(const xmss_params *params,
                         unsigned char *pk, unsigned char *sk)
 {
-    unsigned char seed[3 * params->n];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *seed = ws->keypair_seed;
+
+    if (core_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     randombytes(seed, 3 * params->n);
     xmssmt_core_seed_keypair(params, pk, sk, seed);
@@ -185,12 +222,13 @@ int xmssmt_core_sign(const xmss_params *params,
                      unsigned char *sm, unsigned long long *smlen,
                      const unsigned char *m, unsigned long long mlen)
 {
+    xmss_workspace_t *ws = xmss_workspace_get();
     const unsigned char *sk_seed = sk + params->index_bytes;
     const unsigned char *sk_prf = sk + params->index_bytes + params->n;
     const unsigned char *pub_root = sk + params->index_bytes + 2*params->n;
     const unsigned char *pub_seed = sk + params->index_bytes + 3*params->n;
 
-    unsigned char root[params->n];
+    unsigned char *root = ws->sign_root;
     unsigned char *mhash = root;
     unsigned long long idx;
     unsigned char idx_bytes_32[32];
@@ -199,6 +237,10 @@ int xmssmt_core_sign(const xmss_params *params,
 
     uint32_t ots_addr[8] = {0};
     set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
+
+    if (core_params_fit_scratch(params) != 0) {
+        return -1;
+    }
 
     /* Already put the message in the right place, to make it easier to prepend
      * things when computing the hash over the message. */

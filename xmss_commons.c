@@ -8,6 +8,26 @@
 #include "wots.h"
 #include "utils.h"
 #include "xmss_commons.h"
+#include "xmss_workspace.h"
+
+static unsigned char g_verify_compute_root_buffer[2U * XMSS_WS_MAX_N];
+static unsigned char g_verify_wots_pk[XMSS_WS_WOTS_SIG_BYTES];
+static unsigned char g_verify_leaf[XMSS_WS_MAX_N];
+static unsigned char g_verify_root[XMSS_WS_MAX_N];
+
+static int commons_params_fit_scratch(const xmss_params *params)
+{
+    if (params->n > XMSS_WS_MAX_N) {
+        return -1;
+    }
+    if (params->wots_len > XMSS_WS_MAX_WOTS_LEN) {
+        return -1;
+    }
+    if (params->wots_sig_bytes > XMSS_WS_WOTS_SIG_BYTES) {
+        return -1;
+    }
+    return 0;
+}
 
 /**
  * Computes a leaf node from a WOTS public key using an L-tree.
@@ -57,7 +77,12 @@ static void compute_root(const xmss_params *params, unsigned char *root,
                          const unsigned char *pub_seed, uint32_t addr[8])
 {
     uint32_t i;
-    unsigned char buffer[2*params->n];
+    unsigned char *buffer = g_verify_compute_root_buffer;
+
+    if (commons_params_fit_scratch(params) != 0) {
+        memset(root, 0, params->n);
+        return;
+    }
 
     /* If leafidx is odd (last bit = 1), current path element is a right child
        and auth_path has to go left. Otherwise it is the other way around. */
@@ -105,7 +130,13 @@ void gen_leaf_wots(const xmss_params *params, unsigned char *leaf,
                    const unsigned char *sk_seed, const unsigned char *pub_seed,
                    uint32_t ltree_addr[8], uint32_t ots_addr[8])
 {
-    unsigned char pk[params->wots_sig_bytes];
+    xmss_workspace_t *ws = xmss_workspace_get();
+    unsigned char *pk = ws->leaf_wots_pk;
+
+    if (commons_params_fit_scratch(params) != 0) {
+        memset(leaf, 0, params->n);
+        return;
+    }
 
     wots_pkgen(params, pk, sk_seed, pub_seed, ots_addr);
 
@@ -140,9 +171,9 @@ int xmssmt_core_sign_open(const xmss_params *params,
 {
     const unsigned char *pub_root = pk;
     const unsigned char *pub_seed = pk + params->n;
-    unsigned char wots_pk[params->wots_sig_bytes];
-    unsigned char leaf[params->n];
-    unsigned char root[params->n];
+    unsigned char *wots_pk = g_verify_wots_pk;
+    unsigned char *leaf = g_verify_leaf;
+    unsigned char *root = g_verify_root;
     unsigned char *mhash = root;
     unsigned long long idx = 0;
     unsigned int i;
@@ -155,6 +186,11 @@ int xmssmt_core_sign_open(const xmss_params *params,
     set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
     set_type(ltree_addr, XMSS_ADDR_TYPE_LTREE);
     set_type(node_addr, XMSS_ADDR_TYPE_HASHTREE);
+
+    if (commons_params_fit_scratch(params) != 0) {
+        *mlen = 0;
+        return -1;
+    }
 
     *mlen = smlen - params->sig_bytes;
 

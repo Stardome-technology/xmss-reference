@@ -37,15 +37,6 @@ int mcu_xmss_sign(const unsigned char *msg, unsigned long long msglen,
                   unsigned char *sig, unsigned long long *siglen);
 
 /**
- * Test XMSS signing and verification with "STARDOME" message.
- * - Signs the test message
- * - Verifies the signature
- * - Logs timing information
- * - Returns MCU_XMSS_OK on success, error code on failure
- */
-int mcu_xmss_test_sign_verify(void);
-
-/**
  * Perform a clean shutdown.
  * - Saves the current index to flash.
  * - Updates the integrity check to mark a clean shutdown.
@@ -56,6 +47,13 @@ int mcu_xmss_shutdown(void);
  * Get the current index (for display/debug).
  */
 uint64_t mcu_xmss_get_index(void);
+
+/**
+ * Return the detached signature size (params.sig_bytes) for the active parameter set.
+ * @param out  Pointer to receive the value. Must not be NULL.
+ * @return MCU_XMSS_OK on success, MCU_XMSS_ERR_KEYS if not initialized.
+ */
+int mcu_xmss_get_sig_bytes(unsigned long long *out);
 
 /**
  * NOTE: This module should be compiled with `xmss_core.c` (stateless implementation),
