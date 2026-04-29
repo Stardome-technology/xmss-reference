@@ -9,7 +9,6 @@
 #include "xmss_workspace.h"
 
 static sha_cb_t sha_cb = NULL;
-static rng_cb_t rng_cb = NULL;
 
 static int hash_params_fit_scratch(const xmss_params *params)
 {
@@ -42,15 +41,6 @@ int xmss_set_sha_cb(sha_cb_t cb)
         return -1;
     }
     sha_cb = cb;
-    return 0;
-}
-
-int xmss_set_rng_cb(rng_cb_t cb)
-{
-    if (cb == NULL) {
-        return -1;
-    }
-    rng_cb = cb;
     return 0;
 }
 
