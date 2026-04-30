@@ -10,6 +10,7 @@
 #include "utils.h"
 #include "xmss_commons.h"
 #include "xmss_core.h"
+#include "xmss_core_hooks.h"
 #include "xmss_workspace.h"
 
 static xmss_workspace_t g_xmss_workspace;
@@ -234,9 +235,12 @@ int xmssmt_core_sign(const xmss_params *params,
     unsigned char idx_bytes_32[32];
     unsigned int i;
     uint32_t idx_leaf;
+    const uint32_t sign_start_ms = xmssmt_core_hooks_time_now_ms();
 
     uint32_t ots_addr[8] = {0};
     set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
+
+    xmssmt_core_hooks_sign_timing_begin(params);
 
     if (core_params_fit_scratch(params) != 0) {
         return -1;
@@ -281,6 +285,7 @@ int xmssmt_core_sign(const xmss_params *params,
     ull_to_bytes(sk, params->index_bytes, idx + 1);
 
     /* Compute the digest randomization value. */
+    const uint32_t prf_msg_start_ms = xmssmt_core_hooks_time_now_ms();
     ull_to_bytes(idx_bytes_32, 32, idx);
     prf(params, sm + params->index_bytes, idx_bytes_32, sk_prf);
 
@@ -288,6 +293,7 @@ int xmssmt_core_sign(const xmss_params *params,
     hash_message(params, mhash, sm + params->index_bytes, pub_root, idx,
                  sm + params->sig_bytes - params->padding_len - 3*params->n,
                  mlen);
+    xmssmt_core_hooks_sign_timing_note_prf_msg(prf_msg_start_ms);
     sm += params->index_bytes + params->n;
 
     set_type(ots_addr, XMSS_ADDR_TYPE_OTS);
@@ -303,13 +309,32 @@ int xmssmt_core_sign(const xmss_params *params,
         /* Compute a WOTS signature. */
         /* Initially, root = mhash, but on subsequent iterations it is the root
            of the subtree below the currently processed subtree. */
+        const uint32_t wots_start_ms = xmssmt_core_hooks_time_now_ms();
         wots_sign(params, sm, root, sk_seed, pub_seed, ots_addr);
+        xmssmt_core_hooks_sign_timing_note_wots(wots_start_ms);
         sm += params->wots_sig_bytes;
 
         /* Compute the authentication path for the used WOTS leaf. */
-        treehash(params, root, sm, sk_seed, pub_seed, idx_leaf, ots_addr);
+        const uint32_t treehash_start_ms = xmssmt_core_hooks_time_now_ms();
+        uint32_t cache_build_ms = 0u;
+        int cache_hit = 0;
+        if (xmssmt_core_hooks_cached_auth_path(params,
+                                               sk_seed,
+                                               pub_seed,
+                                               i,
+                                               idx,
+                                               idx_leaf,
+                                               root,
+                                               sm,
+                                               &cache_build_ms,
+                                               &cache_hit) != 0) {
+            treehash(params, root, sm, sk_seed, pub_seed, idx_leaf, ots_addr);
+        }
+        xmssmt_core_hooks_sign_timing_note_treehash(treehash_start_ms, cache_build_ms, cache_hit);
         sm += params->tree_height*params->n;
     }
+
+    xmssmt_core_hooks_sign_timing_end(sign_start_ms);
 
     return 0;
 }

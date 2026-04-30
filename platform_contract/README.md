@@ -23,6 +23,20 @@ The callback typedefs live in `core/xmss_callbacks.h`:
 - `sha_cb_t`: computes SHA-256 over the provided input buffer into the output buffer
 - `rng_cb_t`: fills a caller-provided output buffer with random bytes
 
+## Optional hook seam
+
+Consumers may also register an optional neutral hook table via
+`xmssmt_core_hooks_set()` from `core/xmss_core_hooks.h`.
+
+This hook ABI is intended for cross-platform concerns that can remain neutral at the
+core boundary:
+
+- sign-timing observation
+- cached-auth-path reuse
+
+If no hook table is registered, the core still behaves correctly and falls back to
+its normal internal flow.
+
 ## Intentionally out of scope
 
 The public contract does not define a canonical implementation for:
@@ -31,6 +45,7 @@ The public contract does not define a canonical implementation for:
 - detached-signature formatting helpers
 - filesystem, flash, or monotonic-index persistence
 - console logging or time measurement
+- hook implementations themselves
 - hardware SHA or FPGA acceleration dispatch
 
 Those concerns belong in the consumer repository, not in the public XMSS reference.

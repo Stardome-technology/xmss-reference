@@ -10,6 +10,12 @@
 
 static sha_cb_t sha_cb = NULL;
 
+#define XMSS_HASH_PADDING_F 0
+#define XMSS_HASH_PADDING_H 1
+#define XMSS_HASH_PADDING_HASH 2
+#define XMSS_HASH_PADDING_PRF 3
+#define XMSS_HASH_PADDING_PRF_KEYGEN 4
+
 static int hash_params_fit_scratch(const xmss_params *params)
 {
     if (params->n > XMSS_WS_MAX_N) {
@@ -20,12 +26,6 @@ static int hash_params_fit_scratch(const xmss_params *params)
     }
     return 0;
 }
-
-#define XMSS_HASH_PADDING_F 0
-#define XMSS_HASH_PADDING_H 1
-#define XMSS_HASH_PADDING_HASH 2
-#define XMSS_HASH_PADDING_PRF 3
-#define XMSS_HASH_PADDING_PRF_KEYGEN 4
 
 void addr_to_bytes(unsigned char *bytes, const uint32_t addr[8])
 {

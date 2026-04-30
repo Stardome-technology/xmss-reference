@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * Profile-specialized workspace bounds for active firmware parameter set:
+ * Profile-specialized workspace bounds for the active firmware parameter set:
  *   XMSSMT-SHA2_40/8_256 (OID 0x00000005)
  *
  * n=32, padding_len=32, wots_len=67, checksum_bytes=2, tree_height=5
