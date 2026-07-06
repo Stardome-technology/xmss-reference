@@ -4,16 +4,15 @@
 #include <stdint.h>
 
 /*
- * Profile-specialized workspace bounds for the active firmware parameter set:
- *   XMSSMT-SHA2_40/8_256 (OID 0x00000005)
- *
- * n=32, padding_len=32, wots_len=67, checksum_bytes=2, tree_height=5
+ * Workspace bounds for SEAD service builds (Linux).
+ * Sized for XMSS-SHA2_20_256 (OID 0x03) with tree_height=20.
+ * The MCU firmware uses its own copy of this file with tree_height=5.
  */
 #define XMSS_WS_MAX_N 32U
 #define XMSS_WS_MAX_PADDING_LEN 32U
 #define XMSS_WS_MAX_WOTS_LEN 67U
 #define XMSS_WS_MAX_CSUM_BYTES 2U
-#define XMSS_WS_MAX_TREE_HEIGHT 5U
+#define XMSS_WS_MAX_TREE_HEIGHT 20U
 
 #define XMSS_WS_PRF_BUF_BYTES (XMSS_WS_MAX_PADDING_LEN + XMSS_WS_MAX_N + 32U)
 #define XMSS_WS_PRF_KEYGEN_BUF_BYTES (XMSS_WS_MAX_PADDING_LEN + (2U * XMSS_WS_MAX_N) + 32U)
