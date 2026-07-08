@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.a
+*.lo
+*.obj
+*.dll
+*.exe
+*.out
+*.d
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
