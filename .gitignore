@@ -1,3 +1,13 @@
+test/*
+!test/*.c
+ui/*
+!ui/*.c
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
 *.o
 *.so
 *.a
