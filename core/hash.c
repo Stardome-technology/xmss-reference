@@ -52,8 +52,8 @@ static int core_hash(const xmss_params *params,
         return -1;
     }
 
-    // Only support SHA2-256 (n=32)
-    if (params->n == 32 && params->func == XMSS_SHA2) {
+    // Support SHA2-256 and SHAKE256 (both n=32)
+    if (params->n == 32 && (params->func == XMSS_SHA2 || params->func == XMSS_SHAKE256)) {
         return sha_cb(in, inlen, out);
     }
     
