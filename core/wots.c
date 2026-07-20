@@ -6,18 +6,6 @@
 #include "wots.h"
 #include "hash_address.h"
 #include "params.h"
-#include "xmss_workspace.h"
-
-static int wots_params_fit_scratch(const xmss_params *params)
-{
-    if (params->n > XMSS_WS_MAX_N) {
-        return -1;
-    }
-    if (params->wots_len > XMSS_WS_MAX_WOTS_LEN) {
-        return -1;
-    }
-    return 0;
-}
 
 /**
  * Helper method for pseudorandom key generation.
@@ -28,12 +16,7 @@ static void expand_seed(const xmss_params *params,
                         const unsigned char *pub_seed, uint32_t addr[8])
 {
     uint32_t i;
-    xmss_workspace_t *ws = xmss_workspace_get();
-    unsigned char *buf = ws->expand_seed_buf;
-
-    if (wots_params_fit_scratch(params) != 0) {
-        return;
-    }
+    unsigned char buf[params->n + 32];
 
     set_hash_addr(addr, 0);
     set_key_and_mask(addr, 0);
@@ -99,16 +82,9 @@ static void base_w(const xmss_params *params,
 static void wots_checksum(const xmss_params *params,
                           int *csum_base_w, const int *msg_base_w)
 {
-    xmss_workspace_t *ws = xmss_workspace_get();
     int csum = 0;
-    unsigned char *csum_bytes = ws->wots_csum_bytes;
-    unsigned int csum_bytes_len = (params->wots_len2 * params->wots_log_w + 7) / 8;
+    unsigned char csum_bytes[(params->wots_len2 * params->wots_log_w + 7) / 8];
     unsigned int i;
-
-    if (csum_bytes_len > XMSS_WS_MAX_CSUM_BYTES) {
-        memset(csum_base_w, 0, params->wots_len2 * sizeof(int));
-        return;
-    }
 
     /* Compute checksum. */
     for (i = 0; i < params->wots_len1; i++) {
@@ -118,7 +94,7 @@ static void wots_checksum(const xmss_params *params,
     /* Convert checksum to base_w. */
     /* Make sure expected empty zero bits are the least significant bits. */
     csum = csum << (8 - ((params->wots_len2 * params->wots_log_w) % 8));
-    ull_to_bytes(csum_bytes, csum_bytes_len, csum);
+    ull_to_bytes(csum_bytes, sizeof(csum_bytes), csum);
     base_w(params, csum_base_w, params->wots_len2, csum_bytes);
 }
 
@@ -144,10 +120,6 @@ void wots_pkgen(const xmss_params *params,
 {
     uint32_t i;
 
-    if (wots_params_fit_scratch(params) != 0) {
-        return;
-    }
-
     /* The WOTS+ private key is derived from the seed. */
     expand_seed(params, pk, seed, pub_seed, addr);
 
@@ -167,13 +139,8 @@ void wots_sign(const xmss_params *params,
                const unsigned char *seed, const unsigned char *pub_seed,
                uint32_t addr[8])
 {
-    xmss_workspace_t *ws = xmss_workspace_get();
-    int *lengths = ws->wots_lengths;
+    int lengths[params->wots_len];
     uint32_t i;
-
-    if (wots_params_fit_scratch(params) != 0) {
-        return;
-    }
 
     chain_lengths(params, lengths, msg);
 
@@ -196,13 +163,8 @@ void wots_pk_from_sig(const xmss_params *params, unsigned char *pk,
                       const unsigned char *sig, const unsigned char *msg,
                       const unsigned char *pub_seed, uint32_t addr[8])
 {
-    xmss_workspace_t *ws = xmss_workspace_get();
-    int *lengths = ws->wots_lengths;
+    int lengths[params->wots_len];
     uint32_t i;
-
-    if (wots_params_fit_scratch(params) != 0) {
-        return;
-    }
 
     chain_lengths(params, lengths, msg);
 
