@@ -551,10 +551,7 @@ int xmss_core_keypair(const xmss_params *params,
     state.next_leaf = 0;
 
     // Set idx = 0
-    sk[0] = 0;
-    sk[1] = 0;
-    sk[2] = 0;
-    sk[3] = 0;
+    ull_to_bytes(sk, params->index_bytes, 0);
     // Init SK_SEED (n byte) and SK_PRF (n byte)
     randombytes(sk + params->index_bytes, 2*params->n);
 
@@ -599,7 +596,7 @@ int xmss_core_sign(const xmss_params *params,
     xmss_deserialize_state(params, &state, sk);
 
     // Extract SK
-    unsigned long idx = ((unsigned long)sk[0] << 24) | ((unsigned long)sk[1] << 16) | ((unsigned long)sk[2] << 8) | sk[3];
+    unsigned long long idx = bytes_to_ull(sk, params->index_bytes);
     
     /* Check if we can still sign with this sk.
      * If not, return -2
@@ -635,10 +632,7 @@ int xmss_core_sign(const xmss_params *params,
     ull_to_bytes(idx_bytes_32, 32, idx);
 
     // Update SK
-    sk[0] = ((idx + 1) >> 24) & 255;
-    sk[1] = ((idx + 1) >> 16) & 255;
-    sk[2] = ((idx + 1) >> 8) & 255;
-    sk[3] = (idx + 1) & 255;
+    ull_to_bytes(sk, params->index_bytes, idx + 1);
     // Secret key for this non-forward-secure version is now updated.
     // A production implementation should consider using a file handle instead,
     //  and write the updated secret key at this point!
@@ -669,13 +663,10 @@ int xmss_core_sign(const xmss_params *params,
     *smlen = 0;
 
     // Copy index to signature
-    sm[0] = (idx >> 24) & 255;
-    sm[1] = (idx >> 16) & 255;
-    sm[2] = (idx >> 8) & 255;
-    sm[3] = idx & 255;
+    ull_to_bytes(sm, params->index_bytes, idx);
 
-    sm += 4;
-    *smlen += 4;
+    sm += params->index_bytes;
+    *smlen += params->index_bytes;
 
     // Copy R to signature
     for (i = 0; i < params->n; i++) {
