@@ -35,8 +35,8 @@ static int core_hash(const xmss_params *params,
                      unsigned char *out,
                      const unsigned char *in, unsigned long long inlen)
 {
-    if (sha_cb == NULL) return -1;
     if (params->func == XMSS_SHA2) {
+        if (sha_cb == NULL) return -1;
         return sha_cb(in, inlen, out);
     }
     if (params->func == XMSS_SHAKE256) {
