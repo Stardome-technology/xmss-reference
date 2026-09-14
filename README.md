@@ -23,5 +23,12 @@ The core also exposes an optional neutral hook ABI via `core/xmss_core_hooks.h` 
 sign-timing observation and cached-auth-path reuse. Consumers may ignore this seam
 entirely, or register hook implementations without changing the core algorithm code.
 
+The stateless core additionally exposes the optional acceleration-provider ABI in
+`core/xmss_accel.h`. It covers PRF, H_MSG, WOTS signing, WOTS-leaf generation, and
+two-node THASH_H while leaving XMSSMT scheduling, addresses, TreeHash, key layout,
+and signature serialization in the reference core. A provider reports success,
+not-handled, or error. Only not-handled selects the software fallback; provider
+errors fail the operation instead of being hidden by fallback.
+
 That keeps the reusable code portable while avoiding a public opinion about board
 services, host utilities, or product-specific wrapper behavior.

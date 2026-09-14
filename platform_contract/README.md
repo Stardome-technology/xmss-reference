@@ -37,6 +37,32 @@ core boundary:
 If no hook table is registered, the core still behaves correctly and falls back to
 its normal internal flow.
 
+## Optional acceleration-provider seam
+
+Consumers that implement complete XMSS operations in hardware may register an
+`xmss_accel_provider_t` from `core/xmss_accel.h`. The stateless core consults the
+provider at five natural operation boundaries:
+
+- PRF for signature randomization;
+- H_MSG;
+- WOTS_SIGN;
+- GEN_LEAF during TreeHash; and
+- THASH_H during TreeHash.
+
+The provider is an implementation service, not an alternative composer. Parameter
+selection, index/layer scheduling, structured addresses, TreeHash order, key layout,
+and signature serialization remain owned by the core.
+
+Each callback returns one of three outcomes. `XMSS_ACCEL_OK` means the requested
+output is complete. `XMSS_ACCEL_NOT_HANDLED` asks the core to execute its existing
+software operation. `XMSS_ACCEL_ERROR` is terminal and must not silently fall back.
+This distinction lets an absent accelerator remain optional without masking a real
+transport or hardware failure.
+
+The initial provider integration applies to the stateless `xmss_core.c` build. The
+alternative BDS implementation in `xmss_core_fast.c` is not provider-enabled and
+must not be selected by a consumer that requires this ABI.
+
 ## Intentionally out of scope
 
 The public contract does not define a canonical implementation for:
@@ -47,6 +73,9 @@ The public contract does not define a canonical implementation for:
 - console logging or time measurement
 - hook implementations themselves
 - hardware SHA or FPGA acceleration dispatch
+
+Concrete acceleration drivers remain out of scope even though the neutral provider
+ABI is part of the public core contract.
 
 Those concerns belong in the consumer repository, not in the public XMSS reference.
 

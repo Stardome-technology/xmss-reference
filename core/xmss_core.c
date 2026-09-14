@@ -11,6 +11,7 @@
 #include "xmss_commons.h"
 #include "xmss_core.h"
 #include "xmss_core_hooks.h"
+#include "xmss_accel.h"
 #include "xmss_workspace.h"
 
 static xmss_workspace_t g_xmss_workspace;
@@ -36,7 +37,7 @@ static int core_params_fit_scratch(const xmss_params *params)
  * root node using Merkle's TreeHash algorithm.
  * Expects the layer and tree parts of subtree_addr to be set.
  */
-static void treehash(const xmss_params *params,
+static int treehash(const xmss_params *params,
                      unsigned char *root, unsigned char *auth_path,
                      const unsigned char *sk_seed,
                      const unsigned char *pub_seed,
@@ -68,15 +69,24 @@ static void treehash(const xmss_params *params,
     if (core_params_fit_scratch(params) != 0) {
         memset(root, 0, params->n);
         memset(auth_path, 0, params->tree_height * params->n);
-        return;
+        return -1;
     }
 
     for (idx = 0; idx < (uint32_t)(1 << params->tree_height); idx++) {
         /* Add the next leaf node to the stack. */
         set_ltree_addr(ltree_addr, idx);
         set_ots_addr(ots_addr, idx);
-        gen_leaf_wots(params, stack + offset*params->n,
-                      sk_seed, pub_seed, ltree_addr, ots_addr);
+        {
+            xmss_accel_result_t accelerated = xmss_accel_try_gen_leaf(
+                params, stack + offset*params->n, sk_seed, pub_seed,
+                ltree_addr, ots_addr);
+            if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
+                gen_leaf_wots(params, stack + offset*params->n,
+                              sk_seed, pub_seed, ltree_addr, ots_addr);
+            } else if (accelerated != XMSS_ACCEL_OK) {
+                return -1;
+            }
+        }
         offset++;
         heights[offset - 1] = 0;
 
@@ -96,8 +106,20 @@ static void treehash(const xmss_params *params,
                from the fact that we address the hash function calls. */
             set_tree_height(node_addr, heights[offset - 1]);
             set_tree_index(node_addr, tree_idx);
-            thash_h(params, stack + (offset-2)*params->n,
-                           stack + (offset-2)*params->n, pub_seed, node_addr);
+            {
+                xmss_accel_result_t accelerated = xmss_accel_try_thash_h(
+                    params, stack + (offset-2)*params->n,
+                    stack + (offset-2)*params->n, pub_seed, node_addr);
+                if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
+                    if (thash_h(params, stack + (offset-2)*params->n,
+                                stack + (offset-2)*params->n, pub_seed,
+                                node_addr) != 0) {
+                        return -1;
+                    }
+                } else if (accelerated != XMSS_ACCEL_OK) {
+                    return -1;
+                }
+            }
             offset--;
             /* Note that the top-most node is now one layer higher. */
             heights[offset - 1]++;
@@ -110,6 +132,7 @@ static void treehash(const xmss_params *params,
         }
     }
     memcpy(root, stack, params->n);
+    return 0;
 }
 
 /**
@@ -187,7 +210,10 @@ int xmssmt_core_seed_keypair(const xmss_params *params,
     memcpy(pk + params->n, sk + 3*params->n, params->n);
 
     /* Compute root node of the top-most subtree. */
-    treehash(params, pk, auth_path, sk, pk + params->n, 0, top_tree_addr);
+    if (treehash(params, pk, auth_path, sk, pk + params->n, 0,
+                 top_tree_addr) != 0) {
+        return -1;
+    }
     memcpy(sk + 2*params->n, pk, params->n);
 
     return 0;
@@ -209,9 +235,7 @@ int xmssmt_core_keypair(const xmss_params *params,
     }
 
     randombytes(seed, 3 * params->n);
-    xmssmt_core_seed_keypair(params, pk, sk, seed);
-
-    return 0;
+    return xmssmt_core_seed_keypair(params, pk, sk, seed);
 }
 
 /**
@@ -287,12 +311,39 @@ int xmssmt_core_sign(const xmss_params *params,
     /* Compute the digest randomization value. */
     const uint32_t prf_msg_start_ms = xmssmt_core_hooks_time_now_ms();
     ull_to_bytes(idx_bytes_32, 32, idx);
-    prf(params, sm + params->index_bytes, idx_bytes_32, sk_prf);
+    {
+        xmss_accel_result_t accelerated = xmss_accel_try_prf(
+            params, sm + params->index_bytes, idx_bytes_32, sk_prf);
+        if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
+            if (prf(params, sm + params->index_bytes, idx_bytes_32,
+                    sk_prf) != 0) {
+                *smlen = 0;
+                return -3;
+            }
+        } else if (accelerated != XMSS_ACCEL_OK) {
+            *smlen = 0;
+            return -3;
+        }
+    }
 
     /* Compute the message hash. */
-    hash_message(params, mhash, sm + params->index_bytes, pub_root, idx,
-                 sm + params->sig_bytes - params->padding_len - 3*params->n,
-                 mlen);
+    {
+        xmss_accel_result_t accelerated = xmss_accel_try_h_msg(
+            params, mhash, sm + params->index_bytes, pub_root, idx, m, mlen);
+        if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
+            if (hash_message(params, mhash, sm + params->index_bytes,
+                             pub_root, idx,
+                             sm + params->sig_bytes - params->padding_len -
+                                 3*params->n,
+                             mlen) != 0) {
+                *smlen = 0;
+                return -3;
+            }
+        } else if (accelerated != XMSS_ACCEL_OK) {
+            *smlen = 0;
+            return -3;
+        }
+    }
     xmssmt_core_hooks_sign_timing_note_prf_msg(prf_msg_start_ms);
     sm += params->index_bytes + params->n;
 
@@ -310,7 +361,16 @@ int xmssmt_core_sign(const xmss_params *params,
         /* Initially, root = mhash, but on subsequent iterations it is the root
            of the subtree below the currently processed subtree. */
         const uint32_t wots_start_ms = xmssmt_core_hooks_time_now_ms();
-        wots_sign(params, sm, root, sk_seed, pub_seed, ots_addr);
+        {
+            xmss_accel_result_t accelerated = xmss_accel_try_wots_sign(
+                params, sm, root, sk_seed, pub_seed, ots_addr);
+            if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
+                wots_sign(params, sm, root, sk_seed, pub_seed, ots_addr);
+            } else if (accelerated != XMSS_ACCEL_OK) {
+                *smlen = 0;
+                return -3;
+            }
+        }
         xmssmt_core_hooks_sign_timing_note_wots(wots_start_ms);
         sm += params->wots_sig_bytes;
 
@@ -328,7 +388,11 @@ int xmssmt_core_sign(const xmss_params *params,
                                                sm,
                                                &cache_build_ms,
                                                &cache_hit) != 0) {
-            treehash(params, root, sm, sk_seed, pub_seed, idx_leaf, ots_addr);
+            if (treehash(params, root, sm, sk_seed, pub_seed, idx_leaf,
+                         ots_addr) != 0) {
+                *smlen = 0;
+                return -3;
+            }
         }
         xmssmt_core_hooks_sign_timing_note_treehash(treehash_start_ms, cache_build_ms, cache_hit);
         sm += params->tree_height*params->n;
