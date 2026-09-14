@@ -2,6 +2,7 @@
 #define XMSS_CORE_H
 
 #include "params.h"
+#include "xmss_accel.h"
 
 /**
  * Given a set of parameters, this function returns the size of the secret key.
@@ -55,6 +56,9 @@ int xmssmt_core_keypair(const xmss_params *params,
 int xmssmt_core_seed_keypair(const xmss_params *params,
                              unsigned char *pk, unsigned char *sk,
                              unsigned char *seed);
+int xmssmt_core_seed_keypair_with_provider(
+    const xmss_params *params, unsigned char *pk, unsigned char *sk,
+    unsigned char *seed, const xmss_accel_provider_t *provider);
 
 /**
  * Signs a message. Returns an array containing the signature followed by the
@@ -64,6 +68,10 @@ int xmssmt_core_sign(const xmss_params *params,
                      unsigned char *sk,
                      unsigned char *sm, unsigned long long *smlen,
                      const unsigned char *m, unsigned long long mlen);
+int xmssmt_core_sign_with_provider(
+    const xmss_params *params, unsigned char *sk, unsigned char *sm,
+    unsigned long long *smlen, const unsigned char *m,
+    unsigned long long mlen, const xmss_accel_provider_t *provider);
 
 /**
  * Verifies a given message signature pair under a given public key.

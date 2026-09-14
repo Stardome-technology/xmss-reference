@@ -21,6 +21,9 @@ typedef enum {
 typedef struct {
     void *context;
 
+    xmss_accel_result_t (*random_bytes)(
+        void *context, unsigned char *out, unsigned long long length);
+
     xmss_accel_result_t (*prf)(
         void *context, const xmss_params *params, unsigned char *out,
         const unsigned char input[32], const unsigned char *key);
@@ -45,29 +48,34 @@ typedef struct {
         void *context, const xmss_params *params, unsigned char *out,
         const unsigned char *input, const unsigned char *pub_seed,
         const uint32_t node_addr[8]);
-} xmss_accel_provider_t;
 
-/* The provider is copied by value. Passing NULL restores software-only mode. */
-void xmss_accel_provider_set(const xmss_accel_provider_t *provider);
-void xmss_accel_provider_clear(void);
+    void (*progress)(void *context, unsigned int primitive_count,
+                     unsigned int layer, uint32_t leaf);
+    int (*cancel_requested)(void *context);
+} xmss_accel_provider_t;
 
 /* Internal dispatch functions used by the stateless reference core. */
 xmss_accel_result_t xmss_accel_try_prf(
+    const xmss_accel_provider_t *provider,
     const xmss_params *params, unsigned char *out,
     const unsigned char input[32], const unsigned char *key);
 xmss_accel_result_t xmss_accel_try_h_msg(
+    const xmss_accel_provider_t *provider,
     const xmss_params *params, unsigned char *out,
     const unsigned char *r, const unsigned char *root, uint64_t index,
     const unsigned char *message, unsigned long long message_length);
 xmss_accel_result_t xmss_accel_try_wots_sign(
+    const xmss_accel_provider_t *provider,
     const xmss_params *params, unsigned char *signature,
     const unsigned char *message, const unsigned char *sk_seed,
     const unsigned char *pub_seed, const uint32_t ots_addr[8]);
 xmss_accel_result_t xmss_accel_try_gen_leaf(
+    const xmss_accel_provider_t *provider,
     const xmss_params *params, unsigned char *leaf,
     const unsigned char *sk_seed, const unsigned char *pub_seed,
     const uint32_t ltree_addr[8], const uint32_t ots_addr[8]);
 xmss_accel_result_t xmss_accel_try_thash_h(
+    const xmss_accel_provider_t *provider,
     const xmss_params *params, unsigned char *out,
     const unsigned char *input, const unsigned char *pub_seed,
     const uint32_t node_addr[8]);

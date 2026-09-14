@@ -138,7 +138,6 @@ int main(void)
     for (i = 0; i < sizeof(message); ++i)
         message[i] = (unsigned char)(0xA5U ^ (unsigned char)(i * 0x3DU));
 
-    xmss_accel_provider_clear();
     CHECK(xmssmt_core_seed_keypair(&params, pk_software, sk_software,
                                    seed) == 0,
           "software keypair");
@@ -148,9 +147,8 @@ int main(void)
 
     memset(&state, 0, sizeof(state));
     hooks = provider(&state);
-    xmss_accel_provider_set(&hooks);
-    CHECK(xmssmt_core_seed_keypair(&params, pk_provider, sk_provider,
-                                   seed) == 0,
+    CHECK(xmssmt_core_seed_keypair_with_provider(
+              &params, pk_provider, sk_provider, seed, &hooks) == 0,
           "provider keypair");
     CHECK(memcmp(pk_provider, pk_software, sizeof(pk_provider)) == 0,
           "provider public key equals software");
@@ -158,8 +156,9 @@ int main(void)
           "keypair provider command counts");
 
     memset(&state, 0, sizeof(state));
-    CHECK(xmssmt_core_sign(&params, sk_provider, sm_provider,
-                           &provider_length, message, sizeof(message)) == 0,
+    CHECK(xmssmt_core_sign_with_provider(
+              &params, sk_provider, sm_provider, &provider_length, message,
+              sizeof(message), &hooks) == 0,
           "provider signature");
     CHECK(provider_length == software_length &&
           memcmp(sm_provider, sm_software, (size_t)provider_length) == 0,
@@ -174,8 +173,9 @@ int main(void)
     memset(&state, 0, sizeof(state));
     state.fail_h_msg = 1;
     provider_length = 123U;
-    CHECK(xmssmt_core_sign(&params, sk_provider, sm_provider,
-                           &provider_length, message, sizeof(message)) == -3,
+    CHECK(xmssmt_core_sign_with_provider(
+              &params, sk_provider, sm_provider, &provider_length, message,
+              sizeof(message), &hooks) == -3,
           "provider error propagates");
     CHECK(provider_length == 0U, "provider error withholds signed message");
     CHECK(state.prf_calls == 1U && state.h_msg_calls == 1U &&
@@ -183,7 +183,6 @@ int main(void)
           state.thash_h_calls == 0U,
           "provider error stops subsequent work");
 
-    xmss_accel_provider_clear();
     printf("Acceleration provider checks: %u, failures: %u\n", checks,
            failures);
     return failures == 0U ? 0 : 1;

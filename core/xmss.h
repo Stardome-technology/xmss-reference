@@ -2,6 +2,7 @@
 #define XMSS_H
 
 #include <stdint.h>
+#include "xmss_accel.h"
 
 /**
  * Generates a XMSS key pair for a given parameter set.
@@ -37,6 +38,9 @@ int xmss_sign_open(unsigned char *m, unsigned long long *mlen,
  * Format pk: [OID || root || PUB_SEED]
  */
 int xmssmt_keypair(unsigned char *pk, unsigned char *sk, const uint32_t oid);
+int xmssmt_keypair_with_provider(unsigned char *pk, unsigned char *sk,
+                                 const uint32_t oid,
+                                 const xmss_accel_provider_t *provider);
 
 /**
  * Signs a message using an XMSSMT secret key.
@@ -47,6 +51,11 @@ int xmssmt_keypair(unsigned char *pk, unsigned char *sk, const uint32_t oid);
 int xmssmt_sign(unsigned char *sk,
                 unsigned char *sm, unsigned long long *smlen,
                 const unsigned char *m, unsigned long long mlen);
+int xmssmt_sign_with_provider(unsigned char *sk,
+                              unsigned char *sm, unsigned long long *smlen,
+                              const unsigned char *m,
+                              unsigned long long mlen,
+                              const xmss_accel_provider_t *provider);
 
 /**
  * Verifies a given message signature pair using a given public key.

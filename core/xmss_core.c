@@ -12,6 +12,7 @@
 #include "xmss_core.h"
 #include "xmss_core_hooks.h"
 #include "xmss_accel.h"
+#include "xmss_resumable.h"
 #include "xmss_workspace.h"
 
 static xmss_workspace_t g_xmss_workspace;
@@ -37,11 +38,14 @@ static int core_params_fit_scratch(const xmss_params *params)
  * root node using Merkle's TreeHash algorithm.
  * Expects the layer and tree parts of subtree_addr to be set.
  */
+#if defined(XMSS_ENABLE_LEGACY_KEYGEN_EQUIVALENCE) || \
+    defined(XMSS_ENABLE_LEGACY_SIGNER_EQUIVALENCE)
 static int treehash(const xmss_params *params,
                      unsigned char *root, unsigned char *auth_path,
                      const unsigned char *sk_seed,
                      const unsigned char *pub_seed,
-                     uint32_t leaf_idx, const uint32_t subtree_addr[8])
+                     uint32_t leaf_idx, const uint32_t subtree_addr[8],
+                     const xmss_accel_provider_t *provider)
 {
     xmss_workspace_t *ws = xmss_workspace_get();
     unsigned char *stack = ws->treehash_stack;
@@ -78,7 +82,7 @@ static int treehash(const xmss_params *params,
         set_ots_addr(ots_addr, idx);
         {
             xmss_accel_result_t accelerated = xmss_accel_try_gen_leaf(
-                params, stack + offset*params->n, sk_seed, pub_seed,
+                provider, params, stack + offset*params->n, sk_seed, pub_seed,
                 ltree_addr, ots_addr);
             if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
                 gen_leaf_wots(params, stack + offset*params->n,
@@ -108,7 +112,7 @@ static int treehash(const xmss_params *params,
             set_tree_index(node_addr, tree_idx);
             {
                 xmss_accel_result_t accelerated = xmss_accel_try_thash_h(
-                    params, stack + (offset-2)*params->n,
+                    provider, params, stack + (offset-2)*params->n,
                     stack + (offset-2)*params->n, pub_seed, node_addr);
                 if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
                     if (thash_h(params, stack + (offset-2)*params->n,
@@ -134,6 +138,7 @@ static int treehash(const xmss_params *params,
     memcpy(root, stack, params->n);
     return 0;
 }
+#endif
 
 /**
  * Given a set of parameters, this function returns the size of the secret key.
@@ -185,6 +190,34 @@ int xmssmt_core_seed_keypair(const xmss_params *params,
                              unsigned char *pk, unsigned char *sk,
                              unsigned char *seed)
 {
+    return xmssmt_core_seed_keypair_with_provider(params, pk, sk, seed, NULL);
+}
+
+int xmssmt_core_seed_keypair_with_provider(
+    const xmss_params *params, unsigned char *pk, unsigned char *sk,
+    unsigned char *seed, const xmss_accel_provider_t *provider)
+{
+    xmssmt_keygen_state_storage_t storage;
+    xmssmt_keygen_state_t *state = NULL;
+    xmss_resumable_result_t step_result;
+    if (xmssmt_keygen_init(&storage, params, provider, pk, sk, seed,
+                           &state) != 0) return -1;
+    do {
+        step_result = xmssmt_keygen_step(state);
+    } while (step_result == XMSS_RESUMABLE_MORE);
+    if (step_result != XMSS_RESUMABLE_DONE ||
+        xmssmt_keygen_finish(state) != 0) {
+        xmssmt_keygen_abort(state);
+        return -1;
+    }
+    return 0;
+}
+
+#if defined(XMSS_ENABLE_LEGACY_KEYGEN_EQUIVALENCE)
+int xmssmt_core_seed_keypair_legacy_with_provider(
+    const xmss_params *params, unsigned char *pk, unsigned char *sk,
+    unsigned char *seed, const xmss_accel_provider_t *provider)
+{
     /* We do not need the auth path in key generation, but it simplifies the
        code to have just one treehash routine that computes both root and path
        in one function. */
@@ -211,13 +244,14 @@ int xmssmt_core_seed_keypair(const xmss_params *params,
 
     /* Compute root node of the top-most subtree. */
     if (treehash(params, pk, auth_path, sk, pk + params->n, 0,
-                 top_tree_addr) != 0) {
+                 top_tree_addr, provider) != 0) {
         return -1;
     }
     memcpy(sk + 2*params->n, pk, params->n);
 
     return 0;
 }
+#endif
 
 /*
  * Generates a XMSSMT key pair for a given parameter set.
@@ -246,6 +280,48 @@ int xmssmt_core_sign(const xmss_params *params,
                      unsigned char *sk,
                      unsigned char *sm, unsigned long long *smlen,
                      const unsigned char *m, unsigned long long mlen)
+{
+    return xmssmt_core_sign_with_provider(params, sk, sm, smlen, m, mlen,
+                                           NULL);
+}
+
+int xmssmt_core_sign_with_provider(
+    const xmss_params *params, unsigned char *sk, unsigned char *sm,
+    unsigned long long *smlen, const unsigned char *m,
+    unsigned long long mlen, const xmss_accel_provider_t *provider)
+{
+    xmssmt_sign_state_storage_t storage;
+    xmssmt_sign_state_t *state = NULL;
+    xmss_resumable_result_t step_result;
+
+    if (smlen == NULL) return -1;
+    *smlen = 0U;
+    if (xmssmt_sign_init(&storage, params, provider, sk, sm,
+                         params == NULL || mlen > SIZE_MAX - params->sig_bytes
+                             ? 0U
+                             : params->sig_bytes + (size_t)mlen,
+                         m, mlen, &state) != 0) {
+        return -1;
+    }
+    do {
+        step_result = xmssmt_sign_step(state);
+    } while (step_result == XMSS_RESUMABLE_MORE);
+    if (step_result != XMSS_RESUMABLE_DONE ||
+        xmssmt_sign_finish(state, smlen) != 0) {
+        *smlen = 0U;
+        return step_result == XMSS_RESUMABLE_CANCELLED ? -4 : -3;
+    }
+    return 0;
+}
+
+/* Retained temporarily as a differential oracle while the cooperative engine
+ * is accepted.  It is excluded from normal builds so the synchronous and
+ * cooperative APIs cannot diverge in production. */
+#if defined(XMSS_ENABLE_LEGACY_SIGNER_EQUIVALENCE)
+int xmssmt_core_sign_legacy_with_provider(
+    const xmss_params *params, unsigned char *sk, unsigned char *sm,
+    unsigned long long *smlen, const unsigned char *m,
+    unsigned long long mlen, const xmss_accel_provider_t *provider)
 {
     xmss_workspace_t *ws = xmss_workspace_get();
     const unsigned char *sk_seed = sk + params->index_bytes;
@@ -313,7 +389,7 @@ int xmssmt_core_sign(const xmss_params *params,
     ull_to_bytes(idx_bytes_32, 32, idx);
     {
         xmss_accel_result_t accelerated = xmss_accel_try_prf(
-            params, sm + params->index_bytes, idx_bytes_32, sk_prf);
+            provider, params, sm + params->index_bytes, idx_bytes_32, sk_prf);
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             if (prf(params, sm + params->index_bytes, idx_bytes_32,
                     sk_prf) != 0) {
@@ -329,7 +405,8 @@ int xmssmt_core_sign(const xmss_params *params,
     /* Compute the message hash. */
     {
         xmss_accel_result_t accelerated = xmss_accel_try_h_msg(
-            params, mhash, sm + params->index_bytes, pub_root, idx, m, mlen);
+            provider, params, mhash, sm + params->index_bytes, pub_root, idx,
+            m, mlen);
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             if (hash_message(params, mhash, sm + params->index_bytes,
                              pub_root, idx,
@@ -363,7 +440,7 @@ int xmssmt_core_sign(const xmss_params *params,
         const uint32_t wots_start_ms = xmssmt_core_hooks_time_now_ms();
         {
             xmss_accel_result_t accelerated = xmss_accel_try_wots_sign(
-                params, sm, root, sk_seed, pub_seed, ots_addr);
+                provider, params, sm, root, sk_seed, pub_seed, ots_addr);
             if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
                 wots_sign(params, sm, root, sk_seed, pub_seed, ots_addr);
             } else if (accelerated != XMSS_ACCEL_OK) {
@@ -389,7 +466,7 @@ int xmssmt_core_sign(const xmss_params *params,
                                                &cache_build_ms,
                                                &cache_hit) != 0) {
             if (treehash(params, root, sm, sk_seed, pub_seed, idx_leaf,
-                         ots_addr) != 0) {
+                         ots_addr, provider) != 0) {
                 *smlen = 0;
                 return -3;
             }
@@ -402,3 +479,4 @@ int xmssmt_core_sign(const xmss_params *params,
 
     return 0;
 }
+#endif
