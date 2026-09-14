@@ -9,13 +9,15 @@
  * Optional platform-neutral acceleration provider.
  *
  * NOT_HANDLED is the only result that permits the reference software path.
- * ERROR is terminal and must be propagated by the caller.  This distinction
- * prevents a transport or accelerator fault from being hidden by fallback.
+ * PENDING asks a resumable caller to revisit the same primitive without
+ * advancing its phase or primitive count. ERROR is terminal and must be
+ * propagated; transport faults are never hidden by software fallback.
  */
 typedef enum {
     XMSS_ACCEL_ERROR = -1,
     XMSS_ACCEL_NOT_HANDLED = 0,
-    XMSS_ACCEL_OK = 1
+    XMSS_ACCEL_OK = 1,
+    XMSS_ACCEL_PENDING = 2
 } xmss_accel_result_t;
 
 typedef struct {
@@ -52,6 +54,8 @@ typedef struct {
     void (*progress)(void *context, unsigned int primitive_count,
                      unsigned int layer, uint32_t leaf);
     int (*cancel_requested)(void *context);
+    /* Cancel any provider-owned in-flight primitive. Optional and idempotent. */
+    void (*abort)(void *context);
 } xmss_accel_provider_t;
 
 /* Internal dispatch functions used by the stateless reference core. */

@@ -108,6 +108,7 @@ static void progress(struct xmssmt_sign_state *s)
 static xmss_resumable_result_t primitive_result(
     struct xmssmt_sign_state *s, xmss_accel_result_t result)
 {
+    if (result == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
     if (result == XMSS_ACCEL_ERROR) {
         s->phase = PHASE_FAILED;
         return XMSS_RESUMABLE_ERROR;
@@ -169,6 +170,8 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
     if (s->phase == PHASE_FAILED) return XMSS_RESUMABLE_ERROR;
     if (s->phase == PHASE_CANCELLED) return XMSS_RESUMABLE_CANCELLED;
     if (cancelled(s)) {
+        if (s->provider != NULL && s->provider->abort != NULL)
+            s->provider->abort(s->provider->context);
         s->phase = PHASE_CANCELLED;
         return XMSS_RESUMABLE_CANCELLED;
     }
@@ -183,6 +186,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
         accelerated = xmss_accel_try_prf(
             s->provider, p, s->sm + p->index_bytes,
             s->index_bytes_32, sk_prf);
+        if (accelerated == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
         if (accelerated == XMSS_ACCEL_NOT_HANDLED &&
             prf(p, s->sm + p->index_bytes, s->index_bytes_32, sk_prf) != 0)
             accelerated = XMSS_ACCEL_ERROR;
@@ -193,6 +197,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
         accelerated = xmss_accel_try_h_msg(
             s->provider, p, s->root, s->sm + p->index_bytes, pub_root,
             s->original_index, s->message, s->message_length);
+        if (accelerated == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             if (hash_message(p, s->root, s->sm + p->index_bytes, pub_root,
                              s->original_index,
@@ -224,6 +229,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
         accelerated = xmss_accel_try_wots_sign(
             s->provider, p, s->sm + s->signature_offset, s->root,
             sk_seed, pub_seed, s->ots_addr);
+        if (accelerated == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             wots_sign(p, s->sm + s->signature_offset, s->root,
                       sk_seed, pub_seed, s->ots_addr);
@@ -256,6 +262,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
         accelerated = xmss_accel_try_gen_leaf(
             s->provider, p, s->stack + s->stack_offset*p->n,
             sk_seed, pub_seed, s->ltree_addr, s->ots_addr);
+        if (accelerated == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             gen_leaf_wots(p, s->stack + s->stack_offset*p->n,
                           sk_seed, pub_seed, s->ltree_addr, s->ots_addr);
@@ -282,6 +289,8 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
                 s->provider, p, s->stack + (s->stack_offset - 2U)*p->n,
                 s->stack + (s->stack_offset - 2U)*p->n,
                 pub_seed, s->node_addr);
+            if (accelerated == XMSS_ACCEL_PENDING)
+                return XMSS_RESUMABLE_MORE;
             if (accelerated == XMSS_ACCEL_NOT_HANDLED &&
                 thash_h(p, s->stack + (s->stack_offset - 2U)*p->n,
                         s->stack + (s->stack_offset - 2U)*p->n,
@@ -331,8 +340,11 @@ int xmssmt_sign_finish(xmssmt_sign_state_t *state,
 
 void xmssmt_sign_abort(xmssmt_sign_state_t *state)
 {
-    if (state != NULL && state->phase != PHASE_DONE)
+    if (state != NULL && state->phase != PHASE_DONE) {
+        if (state->provider != NULL && state->provider->abort != NULL)
+            state->provider->abort(state->provider->context);
         state->phase = PHASE_CANCELLED;
+    }
 }
 
 unsigned int xmssmt_sign_primitive_count(const xmssmt_sign_state_t *state)
@@ -349,6 +361,7 @@ static int keygen_cancelled(struct xmssmt_keygen_state *s)
 static xmss_resumable_result_t keygen_primitive_result(
     struct xmssmt_keygen_state *s, xmss_accel_result_t result)
 {
+    if (result == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
     if (result == XMSS_ACCEL_ERROR) {
         s->phase = KEYGEN_FAILED;
         return XMSS_RESUMABLE_ERROR;
@@ -405,6 +418,8 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
     if (s->phase == KEYGEN_FAILED) return XMSS_RESUMABLE_ERROR;
     if (s->phase == KEYGEN_CANCELLED) return XMSS_RESUMABLE_CANCELLED;
     if (keygen_cancelled(s)) {
+        if (s->provider != NULL && s->provider->abort != NULL)
+            s->provider->abort(s->provider->context);
         s->phase = KEYGEN_CANCELLED;
         return XMSS_RESUMABLE_CANCELLED;
     }
@@ -417,6 +432,7 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
         accelerated = xmss_accel_try_gen_leaf(
             s->provider, p, s->stack + s->stack_offset*p->n,
             sk_seed, pub_seed, s->ltree_addr, s->ots_addr);
+        if (accelerated == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
         if (accelerated == XMSS_ACCEL_NOT_HANDLED) {
             gen_leaf_wots(p, s->stack + s->stack_offset*p->n,
                           sk_seed, pub_seed, s->ltree_addr, s->ots_addr);
@@ -440,6 +456,8 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
                 s->provider, p, s->stack + (s->stack_offset - 2U)*p->n,
                 s->stack + (s->stack_offset - 2U)*p->n,
                 pub_seed, s->node_addr);
+            if (accelerated == XMSS_ACCEL_PENDING)
+                return XMSS_RESUMABLE_MORE;
             if (accelerated == XMSS_ACCEL_NOT_HANDLED &&
                 thash_h(p, s->stack + (s->stack_offset - 2U)*p->n,
                         s->stack + (s->stack_offset - 2U)*p->n,
@@ -485,6 +503,8 @@ int xmssmt_keygen_finish(xmssmt_keygen_state_t *state)
 void xmssmt_keygen_abort(xmssmt_keygen_state_t *state)
 {
     if (state != NULL && state->phase != KEYGEN_DONE) {
+        if (state->provider != NULL && state->provider->abort != NULL)
+            state->provider->abort(state->provider->context);
         memset(state->staging_sk, 0, sizeof(state->staging_sk));
         state->phase = KEYGEN_CANCELLED;
     }
