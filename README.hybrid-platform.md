@@ -154,13 +154,17 @@ The branch has been tested against the consuming CMODS7 HAT production-source
 mock for `XMSSMT-SHAKE256_40/8_256`. Current evidence includes:
 
 - software-provider regression: 12 checks, 0 failures;
-- resumable-engine regression: 18 checks, 0 failures;
-- production-source HAT reference-platform mock: 50 checks, 0 failures;
+- resumable-engine regression: 25 checks, 0 failures;
+- production-source HAT reference-platform mock: 107 checks, 0 failures;
 - key generation through 32 GEN_LEAF and 31 THASH_H operations;
 - signing through the canonical 514 primitive operations;
 - byte-identical 18,469-byte canonical signature output;
 - accelerated index-one output equal to the independent software path;
-- terminal provider-error behavior without software fallback;
+- terminal provider-error behavior without software fallback at PRF, H_MSG,
+  WOTS_SIGN, GEN_LEAF, and THASH_H boundaries;
+- failure-atomic signature publication through the consuming HAT staging layer;
+- volatile-store zeroization of resumable key-generation/signing secrets on
+  finish, failure, and cancellation;
 - cancellation of provider-owned in-flight work; and
 - synchronous/cooperative execution through the same state machines.
 
@@ -175,7 +179,9 @@ acceptance.
   `XMSSMT-SHAKE256_40/8_256` shape.
 - The resumable workspace currently accepts `full_height < 64`; other OIDs and
   height-64 behavior require separate review and tests.
-- Complete secret-zeroization and failure-atomicity acceptance is still open.
+- Physical-target inspection of secret-zeroization remains part of final HAT
+  integration; host acceptance covers the reference engine and consuming HAT
+  staging boundary.
 - Provider lifetime, replacement, teardown, and concurrency require further
   acceptance tests.
 - Physical FPGA key-generation/signing equivalence and measured step timing

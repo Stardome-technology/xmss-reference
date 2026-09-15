@@ -61,4 +61,10 @@ void xmssmt_sign_abort(xmssmt_sign_state_t *state);
 
 unsigned int xmssmt_sign_primitive_count(const xmssmt_sign_state_t *state);
 
+#ifdef XMSS_RESUMABLE_TEST_HOOKS
+int xmssmt_keygen_test_sensitive_is_zero(
+    const xmssmt_keygen_state_t *state);
+int xmssmt_sign_test_sensitive_is_zero(const xmssmt_sign_state_t *state);
+#endif
+
 #endif

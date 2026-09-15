@@ -17,6 +17,15 @@ static unsigned int failures;
     }                                                                       \
 } while (0)
 
+static int all_bytes_are(const unsigned char *bytes, size_t length,
+                         unsigned char value)
+{
+    size_t i;
+    for (i = 0U; i < length; ++i)
+        if (bytes[i] != value) return 0;
+    return 1;
+}
+
 typedef struct {
     unsigned int progress_calls;
     unsigned int cancel_after;
@@ -71,6 +80,10 @@ int main(void)
     xmssmt_keygen_state_t *keygen_state = NULL;
     unsigned char resumable_pk[64];
     unsigned char resumable_sk[133];
+    unsigned char cancelled_pk[64];
+    unsigned char cancelled_sk[133];
+    xmssmt_keygen_state_storage_t cancelled_keygen_storage;
+    xmssmt_keygen_state_t *cancelled_keygen_state = NULL;
     xmss_accel_provider_t provider;
     observer_t observer;
     size_t i;
@@ -104,6 +117,37 @@ int main(void)
           "resumable keypair is byte-identical");
     CHECK(xmssmt_keygen_primitive_count(keygen_state) == 63U,
           "key generation has 32 leaves and 31 hashes");
+    CHECK(xmssmt_keygen_test_sensitive_is_zero(keygen_state),
+          "finished key generation clears secret staging");
+
+    memset(&provider, 0, sizeof(provider));
+    memset(&observer, 0, sizeof(observer));
+    observer.cancel_after = 3U;
+    provider.context = &observer;
+    provider.progress = observe_progress;
+    provider.cancel_requested = observe_cancel;
+    memset(cancelled_pk, 0xC7, sizeof(cancelled_pk));
+    memset(cancelled_sk, 0xC7, sizeof(cancelled_sk));
+    CHECK(xmssmt_keygen_init(&cancelled_keygen_storage, &params, &provider,
+                             cancelled_pk, cancelled_sk, seed,
+                             &cancelled_keygen_state) == 0,
+          "initialize cancellable key generation");
+    {
+        xmss_resumable_result_t keygen_result;
+        unsigned int keygen_steps = 0U;
+        do {
+            keygen_result = xmssmt_keygen_step(cancelled_keygen_state);
+            ++keygen_steps;
+        } while (keygen_result == XMSS_RESUMABLE_MORE &&
+                 keygen_steps < 256U);
+        CHECK(keygen_result == XMSS_RESUMABLE_CANCELLED,
+              "cancel key generation at a primitive boundary");
+    }
+    CHECK(all_bytes_are(cancelled_pk, sizeof(cancelled_pk), 0xC7U) &&
+          all_bytes_are(cancelled_sk, sizeof(cancelled_sk), 0xC7U),
+          "cancelled key generation publishes no key bytes");
+    CHECK(xmssmt_keygen_test_sensitive_is_zero(cancelled_keygen_state),
+          "cancelled key generation clears secret staging");
 
     memcpy(synchronous_key, original_key, sizeof(original_key));
     CHECK(xmssmt_core_sign(&params, synchronous_key, synchronous,
@@ -132,6 +176,8 @@ int main(void)
     CHECK(xmssmt_sign_primitive_count(state) == 514U &&
           observer.progress_calls == 514U,
           "canonical schedule has 514 bounded primitives");
+    CHECK(xmssmt_sign_test_sensitive_is_zero(state),
+          "finished signing clears resumable secret workspace");
 
     memset(&observer, 0, sizeof(observer));
     observer.cancel_after = 3U;
@@ -147,6 +193,8 @@ int main(void)
           "cancelled operation cannot publish a length");
     CHECK(observer.progress_calls == 3U,
           "cancellation occurs at a primitive boundary");
+    CHECK(xmssmt_sign_test_sensitive_is_zero(state),
+          "cancelled signing clears resumable secret workspace");
 
     printf("Resumable XMSSMT checks: %u, failures: %u\n", checks, failures);
     return failures == 0U ? 0 : 1;

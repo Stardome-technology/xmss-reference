@@ -84,6 +84,28 @@ typedef char state_storage_must_fit[
     sizeof(struct xmssmt_sign_state) <= sizeof(xmssmt_sign_state_storage_t)
         ? 1 : -1];
 
+/* Use volatile stores so secret cleanup is not removed as a dead memset. */
+static void secure_zero(void *memory, size_t length)
+{
+    volatile unsigned char *p = (volatile unsigned char *)memory;
+    while (length-- != 0U) *p++ = 0U;
+}
+
+static void sign_clear_sensitive(struct xmssmt_sign_state *s)
+{
+    secure_zero(s->root, sizeof(s->root));
+    secure_zero(s->index_bytes_32, sizeof(s->index_bytes_32));
+    secure_zero(s->stack, sizeof(s->stack));
+    secure_zero(s->heights, sizeof(s->heights));
+}
+
+static void keygen_clear_sensitive(struct xmssmt_keygen_state *s)
+{
+    secure_zero(s->staging_sk, sizeof(s->staging_sk));
+    secure_zero(s->stack, sizeof(s->stack));
+    secure_zero(s->heights, sizeof(s->heights));
+}
+
 static int supported(const xmss_params *p)
 {
     return p != NULL && p->n <= XMSS_WS_MAX_N &&
@@ -110,6 +132,7 @@ static xmss_resumable_result_t primitive_result(
 {
     if (result == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
     if (result == XMSS_ACCEL_ERROR) {
+        sign_clear_sensitive(s);
         s->phase = PHASE_FAILED;
         return XMSS_RESUMABLE_ERROR;
     }
@@ -172,6 +195,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
     if (cancelled(s)) {
         if (s->provider != NULL && s->provider->abort != NULL)
             s->provider->abort(s->provider->context);
+        sign_clear_sensitive(s);
         s->phase = PHASE_CANCELLED;
         return XMSS_RESUMABLE_CANCELLED;
     }
@@ -314,6 +338,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
             return XMSS_RESUMABLE_MORE;
         }
         if (s->stack_offset != 1U || s->heights[0] != p->tree_height) {
+            sign_clear_sensitive(s);
             s->phase = PHASE_FAILED;
             return XMSS_RESUMABLE_ERROR;
         }
@@ -324,6 +349,7 @@ xmss_resumable_result_t xmssmt_sign_step(xmssmt_sign_state_t *state)
         return XMSS_RESUMABLE_MORE;
 
     default:
+        sign_clear_sensitive(s);
         s->phase = PHASE_FAILED;
         return XMSS_RESUMABLE_ERROR;
     }
@@ -335,6 +361,7 @@ int xmssmt_sign_finish(xmssmt_sign_state_t *state,
     if (state == NULL || signed_message_length == NULL ||
         state->phase != PHASE_DONE) return -1;
     *signed_message_length = state->final_length;
+    sign_clear_sensitive(state);
     return 0;
 }
 
@@ -343,6 +370,7 @@ void xmssmt_sign_abort(xmssmt_sign_state_t *state)
     if (state != NULL && state->phase != PHASE_DONE) {
         if (state->provider != NULL && state->provider->abort != NULL)
             state->provider->abort(state->provider->context);
+        sign_clear_sensitive(state);
         state->phase = PHASE_CANCELLED;
     }
 }
@@ -363,6 +391,7 @@ static xmss_resumable_result_t keygen_primitive_result(
 {
     if (result == XMSS_ACCEL_PENDING) return XMSS_RESUMABLE_MORE;
     if (result == XMSS_ACCEL_ERROR) {
+        keygen_clear_sensitive(s);
         s->phase = KEYGEN_FAILED;
         return XMSS_RESUMABLE_ERROR;
     }
@@ -420,6 +449,7 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
     if (keygen_cancelled(s)) {
         if (s->provider != NULL && s->provider->abort != NULL)
             s->provider->abort(s->provider->context);
+        keygen_clear_sensitive(s);
         s->phase = KEYGEN_CANCELLED;
         return XMSS_RESUMABLE_CANCELLED;
     }
@@ -475,6 +505,7 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
             return XMSS_RESUMABLE_MORE;
         }
         if (s->stack_offset != 1U || s->heights[0] != p->tree_height) {
+            keygen_clear_sensitive(s);
             s->phase = KEYGEN_FAILED;
             return XMSS_RESUMABLE_ERROR;
         }
@@ -483,6 +514,7 @@ xmss_resumable_result_t xmssmt_keygen_step(xmssmt_keygen_state_t *state)
         s->phase = KEYGEN_DONE;
         return XMSS_RESUMABLE_DONE;
     }
+    keygen_clear_sensitive(s);
     s->phase = KEYGEN_FAILED;
     return XMSS_RESUMABLE_ERROR;
 }
@@ -496,7 +528,7 @@ int xmssmt_keygen_finish(xmssmt_keygen_state_t *state)
     sk_bytes = state->params.index_bytes + 4U * state->params.n;
     memcpy(state->caller_pk, state->staging_pk, pk_bytes);
     memcpy(state->caller_sk, state->staging_sk, sk_bytes);
-    memset(state->staging_sk, 0, sizeof(state->staging_sk));
+    keygen_clear_sensitive(state);
     return 0;
 }
 
@@ -505,10 +537,40 @@ void xmssmt_keygen_abort(xmssmt_keygen_state_t *state)
     if (state != NULL && state->phase != KEYGEN_DONE) {
         if (state->provider != NULL && state->provider->abort != NULL)
             state->provider->abort(state->provider->context);
-        memset(state->staging_sk, 0, sizeof(state->staging_sk));
+        keygen_clear_sensitive(state);
         state->phase = KEYGEN_CANCELLED;
     }
 }
+
+#ifdef XMSS_RESUMABLE_TEST_HOOKS
+static int bytes_are_zero(const void *memory, size_t length)
+{
+    const unsigned char *bytes = (const unsigned char *)memory;
+    size_t i;
+    for (i = 0U; i < length; ++i)
+        if (bytes[i] != 0U) return 0;
+    return 1;
+}
+
+int xmssmt_keygen_test_sensitive_is_zero(
+    const xmssmt_keygen_state_t *state)
+{
+    return state != NULL &&
+           bytes_are_zero(state->staging_sk, sizeof(state->staging_sk)) &&
+           bytes_are_zero(state->stack, sizeof(state->stack)) &&
+           bytes_are_zero(state->heights, sizeof(state->heights));
+}
+
+int xmssmt_sign_test_sensitive_is_zero(const xmssmt_sign_state_t *state)
+{
+    return state != NULL &&
+           bytes_are_zero(state->root, sizeof(state->root)) &&
+           bytes_are_zero(state->index_bytes_32,
+                          sizeof(state->index_bytes_32)) &&
+           bytes_are_zero(state->stack, sizeof(state->stack)) &&
+           bytes_are_zero(state->heights, sizeof(state->heights));
+}
+#endif
 
 unsigned int xmssmt_keygen_primitive_count(
     const xmssmt_keygen_state_t *state)
