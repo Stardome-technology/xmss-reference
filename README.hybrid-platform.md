@@ -127,6 +127,12 @@ Provider-aware key generation may obtain independent `SK_SEED`, `SK_PRF`, and
 terminates key generation and does not silently switch sources. Temporary seed
 storage is cleared before returning.
 
+The provider is called three times with exactly `n` bytes, once per seed. If
+the first request is not handled, the original software source fills all three
+seeds; a provider that starts handling the sequence must complete all three or
+the operation fails. Public and secret keys are staged and copied to caller
+buffers only after the full accelerated root construction succeeds.
+
 The provider then accelerates eligible GEN_LEAF and THASH_H operations while
 the reference constructs and serializes the key in its normal format.
 
@@ -155,7 +161,7 @@ mock for `XMSSMT-SHAKE256_40/8_256`. Current evidence includes:
 
 - software-provider regression: 12 checks, 0 failures;
 - resumable-engine regression: 25 checks, 0 failures;
-- production-source HAT reference-platform mock: 107 checks, 0 failures;
+- production-source HAT reference-platform mock: 240 checks, 0 failures;
 - key generation through 32 GEN_LEAF and 31 THASH_H operations;
 - signing through the canonical 514 primitive operations;
 - byte-identical 18,469-byte canonical signature output;
