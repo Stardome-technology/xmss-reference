@@ -1,5 +1,10 @@
 # XMSS Reference
 
+> The `hybrid-platform` branch extends the original Stardome
+> `stardome-stripped-v2` branch with an explicit, resumable acceleration
+> provider. See [README.hybrid-platform.md](README.hybrid-platform.md) for the
+> rationale, compatibility boundary, and integration rules.
+
 This repository now exposes a narrow public layout:
 
 - `core/`: reusable XMSS implementation sources and headers
