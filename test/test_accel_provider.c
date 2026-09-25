@@ -263,7 +263,9 @@ int main(void)
     /* Null provider falls back to software verification. */
     {
         unsigned char recovered[18469U + 32U];
+        unsigned char wrapper_recovered[18469U + 32U];
         unsigned long long recovered_length = 0U;
+        unsigned long long wrapper_length = 0U;
         CHECK(xmssmt_core_sign_open_with_provider(
                   &params, recovered, &recovered_length, sm_software,
                   software_length, pk_software, NULL) == 0,
@@ -271,6 +273,14 @@ int main(void)
         CHECK(recovered_length == sizeof(message) &&
               memcmp(recovered, message, sizeof(message)) == 0,
               "null-provider verify recovers message");
+          CHECK(xmssmt_core_sign_open(
+                &params, wrapper_recovered, &wrapper_length, sm_software,
+                software_length, pk_software) == 0,
+              "provider-less core verify accepts canonical");
+          CHECK(wrapper_length == recovered_length &&
+              memcmp(wrapper_recovered, recovered,
+                   (size_t)recovered_length) == 0,
+              "provider-less core verify equals null-provider wrapper");
     }
 
     printf("Acceleration provider checks: %u, failures: %u\n", checks,

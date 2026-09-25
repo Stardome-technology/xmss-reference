@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "params.h"
+#include "xmss_accel.h"
 
 /**
  * Computes the leaf at a given address. First generates the WOTS key pair,
@@ -30,4 +31,9 @@ int xmssmt_core_sign_open(const xmss_params *params,
                           unsigned char *m, unsigned long long *mlen,
                           const unsigned char *sm, unsigned long long smlen,
                           const unsigned char *pk);
+
+int xmssmt_core_sign_open_with_provider(
+    const xmss_params *params, unsigned char *m, unsigned long long *mlen,
+    const unsigned char *sm, unsigned long long smlen,
+    const unsigned char *pk, const xmss_accel_provider_t *provider);
 #endif
