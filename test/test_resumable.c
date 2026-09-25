@@ -1,8 +1,12 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "hash.h"
+#include "hash_address.h"
 #include "params.h"
+#include "utils.h"
 #include "xmss_core.h"
 #include "xmss_resumable.h"
 
@@ -57,6 +61,100 @@ static int drive(xmssmt_sign_state_t *state)
         if (transitions > 2048U) return -1;
     } while (result == XMSS_RESUMABLE_MORE);
     return result == XMSS_RESUMABLE_DONE ? 0 : (int)result;
+}
+
+static int drive_verify(xmssmt_verify_state_t *state)
+{
+    xmss_resumable_result_t result;
+    unsigned int transitions = 0U;
+    do {
+        result = xmssmt_verify_step(state);
+        ++transitions;
+        if (transitions > 4096U) return -1;
+    } while (result == XMSS_RESUMABLE_MORE);
+    return result == XMSS_RESUMABLE_DONE ? 0 : (int)result;
+}
+
+typedef struct {
+    unsigned int wots_chain_calls;
+    int fail_wots_chain;
+    int pending_wots_chain;
+    int abort_calls;
+} verify_provider_t;
+
+static xmss_accel_result_t verify_provider_h_msg(
+    void *context, const xmss_params *params, unsigned char *out,
+    const unsigned char *r, const unsigned char *root, uint64_t index,
+    const unsigned char *message, unsigned long long message_length)
+{
+    const size_t prefix = params->padding_len + 3U * params->n;
+    unsigned char *buffer;
+    int result;
+    (void)context;
+    if (message_length > (unsigned long long)(SIZE_MAX - prefix))
+        return XMSS_ACCEL_ERROR;
+    buffer = malloc(prefix + (size_t)message_length);
+    if (buffer == NULL) return XMSS_ACCEL_ERROR;
+    memset(buffer, 0, prefix);
+    memcpy(buffer + prefix, message, (size_t)message_length);
+    result = hash_message(params, out, r, root, index, buffer,
+                          message_length);
+    free(buffer);
+    return result == 0 ? XMSS_ACCEL_OK : XMSS_ACCEL_ERROR;
+}
+
+static xmss_accel_result_t verify_provider_wots_chain(
+    void *context, const xmss_params *params, unsigned char *out,
+    const unsigned char *input, const unsigned char *pub_seed,
+    const uint32_t ots_addr[8], unsigned int start, unsigned int steps)
+{
+    verify_provider_t *vp = (verify_provider_t *)context;
+    uint32_t address[8];
+    unsigned int i;
+    vp->wots_chain_calls++;
+    if (vp->fail_wots_chain) return XMSS_ACCEL_ERROR;
+    if (vp->pending_wots_chain) {
+        vp->pending_wots_chain = 0;
+        return XMSS_ACCEL_PENDING;
+    }
+    memcpy(address, ots_addr, sizeof(address));
+    memcpy(out, input, params->n);
+    for (i = start; i < start + steps && i < params->wots_w; ++i) {
+        set_hash_addr(address, i);
+        if (thash_f(params, out, out, pub_seed, address) != 0)
+            return XMSS_ACCEL_ERROR;
+    }
+    return XMSS_ACCEL_OK;
+}
+
+static xmss_accel_result_t verify_provider_thash_h(
+    void *context, const xmss_params *params, unsigned char *out,
+    const unsigned char *input, const unsigned char *pub_seed,
+    const uint32_t node_addr[8])
+{
+    uint32_t address[8];
+    (void)context;
+    memcpy(address, node_addr, sizeof(address));
+    return thash_h(params, out, input, pub_seed, address) == 0
+               ? XMSS_ACCEL_OK : XMSS_ACCEL_ERROR;
+}
+
+static void verify_provider_abort(void *context)
+{
+    verify_provider_t *vp = (verify_provider_t *)context;
+    vp->abort_calls++;
+}
+
+static xmss_accel_provider_t verify_provider(verify_provider_t *vp)
+{
+    xmss_accel_provider_t result;
+    memset(&result, 0, sizeof(result));
+    result.context = vp;
+    result.h_msg = verify_provider_h_msg;
+    result.wots_chain = verify_provider_wots_chain;
+    result.thash_h = verify_provider_thash_h;
+    result.abort = verify_provider_abort;
+    return result;
 }
 
 int main(void)
@@ -195,6 +293,144 @@ int main(void)
           "cancellation occurs at a primitive boundary");
     CHECK(xmssmt_sign_test_sensitive_is_zero(state),
           "cancelled signing clears resumable secret workspace");
+
+    /* ------------------------------------------------------------------ */
+    /* Cooperative verification                                            */
+    /* ------------------------------------------------------------------ */
+    {
+        xmssmt_verify_state_storage_t verify_storage;
+        xmssmt_verify_state_t *verify_state = NULL;
+        unsigned char recovered[18469U + 32U];
+        unsigned long long recovered_length = 0U;
+        verify_provider_t vp;
+        xmss_accel_provider_t vhooks;
+
+        memset(&vp, 0, sizeof(vp));
+        vhooks = verify_provider(&vp);
+        memset(recovered, 0, sizeof(recovered));
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize resumable verifier");
+        CHECK(drive_verify(verify_state) == 0,
+              "drive resumable verifier to completion");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) == 0,
+              "finish resumable verifier");
+        CHECK(recovered_length == sizeof(message) &&
+              memcmp(recovered, message, sizeof(message)) == 0,
+              "resumable verifier recovers the message");
+        CHECK(xmssmt_verify_primitive_count(verify_state) == 1105U,
+              "canonical accelerated verify consumes exactly 1105 primitives");
+        CHECK(vp.wots_chain_calls == 536U,
+              "canonical verify issues 536 wots_chain primitives");
+
+        /* Premature finish is rejected. */
+        memset(recovered, 0, sizeof(recovered));
+        recovered_length = 0U;
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize verifier for premature finish");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) != 0,
+              "premature finish is rejected");
+        CHECK(recovered_length == 0U,
+              "premature finish publishes no message");
+
+        /* PENDING wots_chain is revisited without advancing. */
+        memset(&vp, 0, sizeof(vp));
+        vp.pending_wots_chain = 1;
+        vhooks = verify_provider(&vp);
+        memset(recovered, 0, sizeof(recovered));
+        recovered_length = 0U;
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize verifier for pending wots_chain");
+        CHECK(drive_verify(verify_state) == 0,
+              "verifier survives a pending wots_chain");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) == 0 &&
+              recovered_length == sizeof(message) &&
+              memcmp(recovered, message, sizeof(message)) == 0,
+              "pending wots_chain still verifies canonical");
+        CHECK(vp.wots_chain_calls == 537U,
+              "pending wots_chain is revisited without advancing");
+
+        /* Provider abort during a pending wots_chain. */
+        memset(&vp, 0, sizeof(vp));
+        vp.pending_wots_chain = 1;
+        vhooks = verify_provider(&vp);
+        memset(recovered, 0, sizeof(recovered));
+        recovered_length = 0U;
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize verifier for abort");
+        xmssmt_verify_abort(verify_state);
+        CHECK(vp.abort_calls == 1U,
+              "abort invokes the provider abort callback");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) != 0,
+              "aborted verifier cannot publish a message");
+
+        /* Provider wots_chain error is terminal without fallback. */
+        memset(&vp, 0, sizeof(vp));
+        vp.fail_wots_chain = 1;
+        vhooks = verify_provider(&vp);
+        memset(recovered, 0, sizeof(recovered));
+        recovered_length = 123U;
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize verifier for provider error");
+        CHECK(drive_verify(verify_state) == (int)XMSS_RESUMABLE_ERROR,
+              "provider wots_chain error fails verification");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) != 0,
+              "provider error publishes no message");
+        CHECK(vp.wots_chain_calls == 1U,
+              "provider wots_chain error stops subsequent work");
+
+        /* Cancellation while a primitive is pending. */
+        memset(&vp, 0, sizeof(vp));
+        vhooks = verify_provider(&vp);
+        memset(recovered, 0, sizeof(recovered));
+        recovered_length = 0U;
+        CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks, recovered,
+                                 sizeof(recovered), synchronous,
+                                 (size_t)synchronous_length, public_key,
+                                 sizeof(public_key), &verify_state) == 0,
+              "initialize verifier for cancellation");
+        CHECK(xmssmt_verify_step(verify_state) == XMSS_RESUMABLE_MORE,
+              "first verify step performs H_MSG");
+        xmssmt_verify_abort(verify_state);
+        CHECK(vp.abort_calls == 1U,
+              "cancellation invokes the provider abort callback");
+        CHECK(xmssmt_verify_finish(verify_state, &recovered_length) != 0,
+              "cancelled verifier cannot publish a message");
+
+        /* Mutated signature is rejected and publishes nothing. */
+        {
+            unsigned char mutated[18469U + 32U];
+            memcpy(mutated, synchronous, sizeof(mutated));
+            mutated[params.index_bytes + params.n + 7U] ^= 0x01U;
+            memset(&vp, 0, sizeof(vp));
+            vhooks = verify_provider(&vp);
+            memset(recovered, 0, sizeof(recovered));
+            recovered_length = 0U;
+            CHECK(xmssmt_verify_init(&verify_storage, &params, &vhooks,
+                                     recovered, sizeof(recovered), mutated,
+                                     sizeof(mutated), public_key,
+                                     sizeof(public_key), &verify_state) == 0,
+                  "initialize verifier for mutated signature");
+            CHECK(drive_verify(verify_state) == 0,
+                  "mutated signature completes the walk");
+            CHECK(xmssmt_verify_finish(verify_state, &recovered_length) != 0,
+                  "mutated signature publishes no message");
+        }
+    }
 
     printf("Resumable XMSSMT checks: %u, failures: %u\n", checks, failures);
     return failures == 0U ? 0 : 1;

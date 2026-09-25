@@ -54,3 +54,15 @@ xmss_accel_result_t xmss_accel_try_thash_h(
     return provider->thash_h(provider->context, params, out, input, pub_seed,
                              node_addr);
 }
+
+xmss_accel_result_t xmss_accel_try_wots_chain(
+    const xmss_accel_provider_t *provider,
+    const xmss_params *params, unsigned char *out,
+    const unsigned char *input, const unsigned char *pub_seed,
+    const uint32_t ots_addr[8], unsigned int start, unsigned int steps)
+{
+    if (provider == NULL || provider->wots_chain == NULL)
+        return XMSS_ACCEL_NOT_HANDLED;
+    return provider->wots_chain(provider->context, params, out, input,
+                                pub_seed, ots_addr, start, steps);
+}

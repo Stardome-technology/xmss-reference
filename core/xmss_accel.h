@@ -51,6 +51,18 @@ typedef struct {
         const unsigned char *input, const unsigned char *pub_seed,
         const uint32_t node_addr[8]);
 
+    /*
+     * One bounded WOTS chain segment. The reference derives each base-w digit
+     * d and requests start = d, steps = 15 - d so the provider performs the
+     * remaining hash iterations from the signature value to the chain top.
+     * The provider owns the full chain loop; the reference never issues a
+     * THASH_F primitive for verification.
+     */
+    xmss_accel_result_t (*wots_chain)(
+        void *context, const xmss_params *params, unsigned char *out,
+        const unsigned char *input, const unsigned char *pub_seed,
+        const uint32_t ots_addr[8], unsigned int start, unsigned int steps);
+
     void (*progress)(void *context, unsigned int primitive_count,
                      unsigned int layer, uint32_t leaf);
     int (*cancel_requested)(void *context);
@@ -83,5 +95,10 @@ xmss_accel_result_t xmss_accel_try_thash_h(
     const xmss_params *params, unsigned char *out,
     const unsigned char *input, const unsigned char *pub_seed,
     const uint32_t node_addr[8]);
+xmss_accel_result_t xmss_accel_try_wots_chain(
+    const xmss_accel_provider_t *provider,
+    const xmss_params *params, unsigned char *out,
+    const unsigned char *input, const unsigned char *pub_seed,
+    const uint32_t ots_addr[8], unsigned int start, unsigned int steps);
 
 #endif

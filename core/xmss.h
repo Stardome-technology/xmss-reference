@@ -67,4 +67,8 @@ int xmssmt_sign_with_provider(unsigned char *sk,
 int xmssmt_sign_open(unsigned char *m, unsigned long long *mlen,
                      const unsigned char *sm, unsigned long long smlen,
                      const unsigned char *pk);
+int xmssmt_sign_open_with_provider(
+    unsigned char *m, unsigned long long *mlen,
+    const unsigned char *sm, unsigned long long smlen,
+    const unsigned char *pk, const xmss_accel_provider_t *provider);
 #endif

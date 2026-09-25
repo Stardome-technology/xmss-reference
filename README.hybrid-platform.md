@@ -16,7 +16,7 @@ implementation remains responsible for:
 - layer, tree, leaf, and address scheduling;
 - TreeHash traversal and authentication-path selection;
 - signature and key serialization; and
-- software verification.
+- verification composition and final-root comparison.
 
 The FPGA is an optional primitive executor. The consuming platform translates
 the neutral callbacks into its own transport. The reference has no dependency
@@ -55,6 +55,7 @@ context. It exposes callbacks for:
 - WOTS_SIGN;
 - GEN_LEAF;
 - THASH_H;
+- one bounded WOTS chain segment for verification;
 - progress observation;
 - cancellation observation; and
 - aborting provider-owned in-flight work.
@@ -81,11 +82,12 @@ result in software.
 ## Resumable reference engine
 
 `core/xmss_resumable.c` and `core/xmss_resumable.h` provide shared state
-machines for key generation and signing:
+machines for key generation, signing, and verification:
 
 ```text
 xmssmt_keygen_init / step / finish / abort
 xmssmt_sign_init   / step / finish / abort
+xmssmt_verify_init / step / finish / abort
 ```
 
 Each step performs at most one provider-primitive visit or one local algorithm
@@ -114,10 +116,17 @@ Provider-aware entry points are additive:
 ```c
 xmssmt_keypair_with_provider(..., const xmss_accel_provider_t *provider);
 xmssmt_sign_with_provider(..., const xmss_accel_provider_t *provider);
+xmssmt_sign_open_with_provider(..., const xmss_accel_provider_t *provider);
 ```
 
-Verification remains software-backed. No FPGA provider is required to verify
-a completed signature.
+Verification remains reference-owned. A null provider or a valid
+`XMSS_ACCEL_NOT_HANDLED` response selects the existing software primitive;
+provider-aware verification may accelerate H_MSG, one WOTS chain at a time,
+and THASH_H while the reference retains layer/address scheduling, L-tree and
+authentication-path composition, and final-root comparison. The cooperative
+verifier completes the supported canonical walk in 1105 provider primitives.
+`PENDING` repeats the identical primitive visit; `ERROR` is terminal and never
+falls back to software.
 
 ## Key-generation entropy
 
@@ -164,10 +173,11 @@ mock for `XMSSMT-SHAKE256_40/8_256`. Current evidence includes:
 - production-source HAT reference-platform mock: 240 checks, 0 failures;
 - key generation through 32 GEN_LEAF and 31 THASH_H operations;
 - signing through the canonical 514 primitive operations;
+- verification through the canonical 1105 primitive operations;
 - byte-identical 18,469-byte canonical signature output;
 - accelerated index-one output equal to the independent software path;
 - terminal provider-error behavior without software fallback at PRF, H_MSG,
-  WOTS_SIGN, GEN_LEAF, and THASH_H boundaries;
+  WOTS_SIGN, WOTS_CHAIN, GEN_LEAF, and THASH_H boundaries;
 - failure-atomic signature publication through the consuming HAT staging layer;
 - volatile-store zeroization of resumable key-generation/signing secrets on
   finish, failure, and cancellation;

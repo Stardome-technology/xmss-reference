@@ -8,6 +8,7 @@
 #include "wots.h"
 #include "utils.h"
 #include "xmss_commons.h"
+#include "xmss_resumable.h"
 
 /**
  * Computes a leaf node from a WOTS public key using an L-tree.
@@ -211,5 +212,43 @@ int xmssmt_core_sign_open(const xmss_params *params,
     /* If verification was successful, copy the message from the signature. */
     memcpy(m, sm, *mlen);
 
+    return 0;
+}
+
+/*
+ * Provider-aware XMSSMT verification. Drives the same resumable verifier to a
+ * terminal result. A null provider selects the software path. On success the
+ * recovered message is written to `m` and `mlen` receives its length; on
+ * rejection or failure `mlen` is set to zero and no message is published.
+ */
+int xmssmt_core_sign_open_with_provider(
+    const xmss_params *params, unsigned char *m, unsigned long long *mlen,
+    const unsigned char *sm, unsigned long long smlen,
+    const unsigned char *pk, const xmss_accel_provider_t *provider)
+{
+    xmssmt_verify_state_storage_t storage;
+    xmssmt_verify_state_t *state = NULL;
+    xmss_resumable_result_t step_result;
+    unsigned long long recovered_length = 0U;
+    size_t capacity;
+
+    if (mlen == NULL) return -1;
+    *mlen = 0U;
+    if (params == NULL || sm == NULL || pk == NULL || m == NULL) return -1;
+    if (smlen < params->sig_bytes) return -1;
+    capacity = (size_t)(smlen - params->sig_bytes);
+    if (xmssmt_verify_init(&storage, params, provider, m, capacity, sm,
+                           (size_t)smlen, pk, 2U * params->n, &state) != 0)
+        return -1;
+    do {
+        step_result = xmssmt_verify_step(state);
+    } while (step_result == XMSS_RESUMABLE_MORE);
+    if (step_result != XMSS_RESUMABLE_DONE ||
+        xmssmt_verify_finish(state, &recovered_length) != 0) {
+        xmssmt_verify_abort(state);
+        *mlen = 0U;
+        return step_result == XMSS_RESUMABLE_CANCELLED ? -4 : -1;
+    }
+    *mlen = recovered_length;
     return 0;
 }

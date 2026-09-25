@@ -39,25 +39,39 @@ its normal internal flow.
 
 ## Optional acceleration-provider seam
 
-Consumers that implement complete XMSS operations in hardware may register an
+Consumers that implement bounded XMSS primitives in hardware may register an
 `xmss_accel_provider_t` from `core/xmss_accel.h`. The stateless core consults the
-provider at five natural operation boundaries:
+provider at six natural operation boundaries:
 
 - PRF for signature randomization;
 - H_MSG;
 - WOTS_SIGN;
 - GEN_LEAF during TreeHash; and
-- THASH_H during TreeHash.
+- THASH_H during TreeHash, L-tree reduction, and root reconstruction; and
+- WOTS_CHAIN for one bounded verification chain segment.
 
 The provider is an implementation service, not an alternative composer. Parameter
 selection, index/layer scheduling, structured addresses, TreeHash order, key layout,
 and signature serialization remain owned by the core.
 
-Each callback returns one of three outcomes. `XMSS_ACCEL_OK` means the requested
+Each callback returns one of four outcomes. `XMSS_ACCEL_OK` means the requested
 output is complete. `XMSS_ACCEL_NOT_HANDLED` asks the core to execute its existing
-software operation. `XMSS_ACCEL_ERROR` is terminal and must not silently fall back.
+software operation. `XMSS_ACCEL_PENDING` requires a resumable caller to revisit
+the identical primitive without advancing phase, addresses, output pointer, or
+primitive count. `XMSS_ACCEL_ERROR` is terminal and must not silently fall back.
 This distinction lets an absent accelerator remain optional without masking a real
 transport or hardware failure.
+
+The reference owns verification composition. It derives each base-w digit and
+requests WOTS_CHAIN with `start = digit` and `steps = 15 - digit`, performs the
+L-tree and authentication-path schedule through THASH_H, and compares the final
+root. The provider is still an implementation service, not an alternative
+composer; it must not own signature parsing, layer scheduling, or acceptance.
+
+`core/xmss_resumable.h` exposes caller-owned cooperative key-generation,
+signing, and verification state. Cancellation and explicit abort release any
+provider-owned in-flight primitive through the optional idempotent `abort`
+callback. Existing provider-less entry points remain software-compatible.
 
 The initial provider integration applies to the stateless `xmss_core.c` build. The
 alternative BDS implementation in `xmss_core_fast.c` is not provider-enabled and

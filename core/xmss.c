@@ -171,3 +171,22 @@ int xmssmt_sign_open(unsigned char *m, unsigned long long *mlen,
     }
     return xmssmt_core_sign_open(&params, m, mlen, sm, smlen, pk + XMSS_OID_LEN);
 }
+
+int xmssmt_sign_open_with_provider(
+    unsigned char *m, unsigned long long *mlen,
+    const unsigned char *sm, unsigned long long smlen,
+    const unsigned char *pk, const xmss_accel_provider_t *provider)
+{
+    xmss_params params;
+    uint32_t oid = 0;
+    unsigned int i;
+
+    for (i = 0; i < XMSS_OID_LEN; i++) {
+        oid |= pk[XMSS_OID_LEN - i - 1] << (i * 8);
+    }
+    if (xmssmt_parse_oid(&params, oid)) {
+        return -1;
+    }
+    return xmssmt_core_sign_open_with_provider(
+        &params, m, mlen, sm, smlen, pk + XMSS_OID_LEN, provider);
+}

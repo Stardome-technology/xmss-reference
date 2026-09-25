@@ -82,4 +82,15 @@ int xmssmt_core_sign_open(const xmss_params *params,
                           const unsigned char *sm, unsigned long long smlen,
                           const unsigned char *pk);
 
+/*
+ * Provider-aware XMSSMT verification. Drives the same resumable verifier to a
+ * terminal result. A null provider selects the software path. On success the
+ * recovered message is written to `m` and `mlen` receives its length; on
+ * rejection or failure `mlen` is set to zero and no message is published.
+ */
+int xmssmt_core_sign_open_with_provider(
+    const xmss_params *params, unsigned char *m, unsigned long long *mlen,
+    const unsigned char *sm, unsigned long long smlen,
+    const unsigned char *pk, const xmss_accel_provider_t *provider);
+
 #endif
