@@ -25,3 +25,9 @@ entirely, or register hook implementations without changing the core algorithm c
 
 That keeps the reusable code portable while avoiding a public opinion about board
 services, host utilities, or product-specific wrapper behavior.
+
+## Git workflow
+This repository is a fork consumed as a submodule: development integrates into the
+`stardome-stripped*` branch, never into the inherited upstream `main`/`master`.
+The authoritative rules for contributors and agents are in the `## Git workflow`
+section of [AGENTS.md](AGENTS.md).
